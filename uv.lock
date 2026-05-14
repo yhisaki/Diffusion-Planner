@@ -20,6 +20,7 @@ resolution-markers = [
 members = [
     "diffusion-planner",
     "diffusion-planner-workspace",
+    "drifting-planner",
     "exploration-policy",
     "guidance-gui",
     "preference-optimization",
@@ -538,6 +539,7 @@ version = "4.0.0"
 source = { virtual = "." }
 dependencies = [
     { name = "diffusion-planner" },
+    { name = "drifting-planner" },
     { name = "exploration-policy" },
     { name = "guidance-gui" },
     { name = "preference-optimization" },
@@ -556,6 +558,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "diffusion-planner", editable = "diffusion_planner" },
+    { name = "drifting-planner", editable = "drifting_planner" },
     { name = "exploration-policy", editable = "exploration_policy" },
     { name = "guidance-gui", editable = "guidance_gui" },
     { name = "preference-optimization", editable = "preference_optimization" },
@@ -578,6 +581,29 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/96/8e/709914eb2b5749865801041647dc7f4e6d00b549cfe88b65ca192995f07c/distlib-0.4.0.tar.gz", hash = "sha256:feec40075be03a04501a973d81f633735b4b69f98b05450592310c0f401a4e0d", size = 614605, upload-time = "2025-07-17T16:52:00.465Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/33/6b/e0547afaf41bf2c42e52430072fa5658766e3d65bd4b03a563d1b6336f57/distlib-0.4.0-py2.py3-none-any.whl", hash = "sha256:9659f7d87e46584a30b5780e43ac7a2143098441670ff0a49d5f9034c54a6c16", size = 469047, upload-time = "2025-07-17T16:51:58.613Z" },
+]
+
+[[package]]
+name = "drifting-planner"
+version = "0.1.0"
+source = { editable = "drifting_planner" }
+dependencies = [
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "timm" },
+    { name = "torch" },
+    { name = "tqdm" },
+    { name = "wandb" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "numpy", specifier = ">=1.24.0" },
+    { name = "pandas", specifier = ">=2.0.0" },
+    { name = "timm", specifier = ">=0.9.0" },
+    { name = "torch", specifier = ">=2.0.0" },
+    { name = "tqdm", specifier = ">=4.65.0" },
+    { name = "wandb", specifier = ">=0.15.0" },
 ]
 
 [[package]]
