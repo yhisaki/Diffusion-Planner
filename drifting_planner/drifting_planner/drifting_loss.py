@@ -162,7 +162,7 @@ def compute_drifting_loss(
 
     x_drifted = x_feat + V
 
-    loss = F.mse_loss(x_feat, x_drifted.detach())
+    loss = ((x_feat - x_drifted.detach()) ** 2).sum(dim=-1).mean()
 
     return loss, drift_norm
 
@@ -213,6 +213,44 @@ def compute_grouped_drifting_loss(
         return zero, zero
 
     return torch.stack(losses).mean(), torch.stack(drift_norms).mean()
+
+
+def compute_masked_drifting_loss(
+    x: torch.Tensor,
+    y_pos: torch.Tensor,
+    y_neg: torch.Tensor,
+    valid_mask: torch.Tensor,
+    temperatures: List[float],
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Compute drifting loss over all valid samples in a mini-batch.
+
+    Args:
+        x: [..., D] generated samples
+        y_pos: [..., D] positive samples
+        y_neg: [..., D] negative samples
+        valid_mask: [...] valid sample mask
+        temperatures: list of temperature values
+
+    Returns:
+        loss: scalar drifting loss
+        drift_norm: scalar drift norm
+    """
+    x_flat = x.reshape(-1, x.shape[-1])
+    y_pos_flat = y_pos.reshape(-1, y_pos.shape[-1])
+    y_neg_flat = y_neg.reshape(-1, y_neg.shape[-1])
+    valid_flat = valid_mask.reshape(-1)
+
+    if not torch.any(valid_flat):
+        zero = x.sum() * 0.0
+        return zero, zero
+
+    return compute_drifting_loss(
+        x_flat[valid_flat],
+        y_pos_flat[valid_flat],
+        y_neg_flat[valid_flat],
+        temperatures,
+        ignore_self_negatives=True,
+    )
 
 
 def compute_drifting_loss_multi_scale(
@@ -280,7 +318,7 @@ def compute_drifting_loss_multi_scale(
         drift_norms[f"drift_norm_scale_{j}"] = drift_norm
 
         x_drifted = x_f + V
-        scale_loss = F.mse_loss(x_f, x_drifted.detach())
+        scale_loss = ((x_f - x_drifted.detach()) ** 2).sum(dim=-1).mean()
         total_loss = total_loss + scale_loss
 
     return total_loss, drift_norms

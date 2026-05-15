@@ -49,27 +49,37 @@ def train_epoch(data_loader, model, optimizer, args, ema, aug=None):
         neighbor_future_mask = torch.sum(torch.ne(neighbors_future[..., :3], 0), dim=-1) == 0
         neighbors_future = heading_to_cos_sin(neighbors_future)
         neighbors_future[neighbor_future_mask] = 0.0
-        inputs = args.observation_normalizer(inputs)
-
-        optimizer.zero_grad()
 
         B = inputs["ego_current_state"].shape[0]
         Pn = neighbors_future.shape[1]
         P = 1 + Pn
         T = args.future_len
 
-        ego_current = inputs["ego_current_state"][:, :4]
-        neighbors_current = inputs["neighbor_agents_past"][:, :Pn, -1, :4]
+        ego_current_state_raw = inputs["ego_current_state"]
+        ego_current_raw = ego_current_state_raw[:, :4]
+        neighbors_current_raw = inputs["neighbor_agents_past"][:, :Pn, -1, :4]
+        neighbor_current_mask = (
+            torch.sum(torch.ne(neighbors_current_raw[..., :4], 0), dim=-1) == 0
+        )
 
-        current_states = torch.cat([ego_current[:, None], neighbors_current], dim=1)
+        inputs = args.observation_normalizer(inputs)
+
+        optimizer.zero_grad()
+
+        current_states_raw = torch.cat([ego_current_raw[:, None], neighbors_current_raw], dim=1)
+        current_states = args.state_normalizer(current_states_raw[:, :, None, :])[:, :, 0, :]
 
         gt_future = torch.cat([ego_future[:, None, :, :], neighbors_future], dim=1)
         all_gt = torch.cat([current_states[:, :, None, :], args.state_normalizer(gt_future)], dim=2)
+        neighbor_mask = torch.cat(
+            [neighbor_current_mask.unsqueeze(-1), neighbor_future_mask], dim=-1
+        )
         neighbor_mask_full = torch.cat(
-            [torch.zeros(B, P, 1, dtype=torch.bool, device=neighbor_future_mask.device),
-             torch.cat([torch.zeros(B, 1, T, dtype=torch.bool, device=neighbor_future_mask.device),
-                        neighbor_future_mask], dim=1)],
-            dim=2
+            [
+                torch.zeros(B, 1, T + 1, dtype=torch.bool, device=neighbor_future_mask.device),
+                neighbor_mask,
+            ],
+            dim=1,
         )
         all_gt[neighbor_mask_full.unsqueeze(-1).expand_as(all_gt)] = 0.0
 
@@ -82,19 +92,22 @@ def train_epoch(data_loader, model, optimizer, args, ema, aug=None):
             "gt_trajectories": all_gt,
         }
 
-        encoder_outputs, decoder_output = model(merged_inputs)
+        _, decoder_output = model(merged_inputs)
 
         model_output = decoder_output["model_output"][:, :, 1:, :]
 
         x_generated = model_output.reshape(B, P, T, 4)
+        x_generated_abs = x_generated.clone()
+        x_generated_abs[..., :2] = x_generated_abs[..., :2] + current_states[:, :, None, :2]
 
         y_pos = all_gt[:, :, 1:, :].reshape(B, P, T * 4)
-        x_flat = x_generated.reshape(B, P, T * 4)
+        x_flat = x_generated_abs.reshape(B, P, T * 4)
         y_neg = x_flat
+
         valid_agent_mask = torch.cat(
             [
                 torch.ones(B, 1, dtype=torch.bool, device=neighbor_future_mask.device),
-                ~neighbor_future_mask.any(dim=-1),
+                ~neighbor_mask.any(dim=-1),
             ],
             dim=1,
         )
@@ -107,12 +120,12 @@ def train_epoch(data_loader, model, optimizer, args, ema, aug=None):
             temperatures,
         )
 
-        loss_dict = loss_func(x_generated, all_gt[:, :, 1:, :])
+        loss_dict = loss_func(x_generated_abs, all_gt[:, :, 1:, :])
         position_lat_loss = loss_dict["position_lat_loss"]
         position_lon_loss = loss_dict["position_lon_loss"]
         heading_l2_loss = loss_dict["heading_l2_loss"]
 
-        longitudinal_velocity = inputs["ego_current_state"][:, 4:5]
+        longitudinal_velocity = ego_current_state_raw[:, 4:5]
         velocity_weight = torch.abs(longitudinal_velocity) * args.coeff_velocity
         velocity_weight = torch.clamp_min(velocity_weight, 1.0).unsqueeze(-1)
         position_lon_loss = position_lon_loss / velocity_weight
@@ -156,10 +169,10 @@ def train_epoch(data_loader, model, optimizer, args, ema, aug=None):
         loss["neighbor_collision_loss"] = torch.tensor(0.0, device=dpm_loss.device)
 
         loss["total_loss"] = (
-            args.alpha_neighbor_loss * loss["neighbor_prediction_loss"]
+            args.drifting_loss_weight * loss["drifting_loss"]
+            + args.alpha_neighbor_loss * loss["neighbor_prediction_loss"]
             + args.alpha_planning_loss * loss["ego_planning_loss"]
-            + args.drifting_loss_weight * loss["drifting_loss"]
-            + loss["turn_indicator_loss"]
+            + getattr(args, "turn_indicator_loss_weight", 0.0) * loss["turn_indicator_loss"]
             + args.coeff_road_border_loss * loss["road_border_loss"]
             + args.coeff_neighbor_collision_loss * loss["neighbor_collision_loss"]
         )

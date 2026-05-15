@@ -93,6 +93,13 @@ class DiT(nn.Module):
             act_layer=nn.GELU,
             drop=0.0,
         )
+        self.current_state_embedder = Mlp(
+            in_features=D,
+            hidden_features=128,
+            out_features=hidden_dim,
+            act_layer=nn.GELU,
+            drop=0.0,
+        )
         self.blocks = nn.ModuleList(
             [DiTBlock(hidden_dim, heads, dropout, mlp_ratio) for i in range(depth)]
         )
@@ -101,10 +108,12 @@ class DiT(nn.Module):
     def forward(self, x, cond, cross_c, neighbor_current_mask):
         assert x.dim() == 4, f"{x.dim()=}"
         B, P, T, D = x.shape
+        current_state = x[:, :, 0, :]
 
         x = x.reshape(B, P, T * D)
 
         x = self.preproj(x)
+        x = x + self.current_state_embedder(current_state)
 
         x_embedding = torch.cat(
             [

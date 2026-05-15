@@ -1,8 +1,17 @@
 from copy import copy
+from importlib import resources
 
 import torch
 
-from drifting_planner.utils.train_utils import openjson
+
+def _load_default_normalization():
+    if hasattr(resources, "files"):
+        ref = resources.files("drifting_planner").joinpath("normalization.json")
+        with ref.open("r", encoding="utf-8") as f:
+            return __import__("json").load(f)
+    else:
+        with resources.open_text("drifting_planner", "normalization.json") as f:
+            return __import__("json").load(f)
 
 
 class StateNormalizer:
@@ -12,7 +21,7 @@ class StateNormalizer:
 
     @classmethod
     def from_json(cls, args):
-        data = openjson(args.normalization_file_path)
+        data = _load_default_normalization()
         mean = [[data["ego"]["mean"]]] + [[data["neighbor"]["mean"]]] * args.predicted_neighbor_num
         std = [[data["ego"]["std"]]] + [[data["neighbor"]["std"]]] * args.predicted_neighbor_num
         return cls(mean, std)
@@ -36,12 +45,7 @@ class ObservationNormalizer:
 
     @classmethod
     def from_json(cls, args):
-        if isinstance(args, str):
-            path = args
-        else:
-            path = args.normalization_file_path
-
-        data = openjson(path)
+        data = _load_default_normalization()
         ndt = {}
         for k, v in data.items():
             if k not in ["ego", "neighbor"]:
@@ -54,7 +58,7 @@ class ObservationNormalizer:
     def __call__(self, data):
         norm_data = copy(data)
         for k, v in self._normalization_dict.items():
-            if k not in data:  # Check if key `k` exists in `data`
+            if k not in data:
                 continue
             mask = torch.sum(torch.ne(data[k], 0), dim=-1) == 0
             norm_data[k] = (data[k] - v["mean"].to(data[k].device)) / v["std"].to(data[k].device)
@@ -64,7 +68,7 @@ class ObservationNormalizer:
     def inverse(self, data):
         norm_data = copy(data)
         for k, v in self._normalization_dict.items():
-            if k not in data:  # Check if key `k` exists in `data`
+            if k not in data:
                 continue
             mask = torch.sum(torch.ne(data[k], 0), dim=-1) == 0
             norm_data[k] = data[k] * v["std"].to(data[k].device) + v["mean"].to(data[k].device)

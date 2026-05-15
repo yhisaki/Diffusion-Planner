@@ -177,7 +177,6 @@ def get_args():
 
     parser.add_argument("--use_data_augment", default=True, type=boolean)
     parser.add_argument("--augment_prob", type=float, default=0.5)
-    parser.add_argument("--normalization_file_path", default="normalization.json", type=str)
     parser.add_argument("--num_workers", default=4, type=int)
     parser.add_argument("--pin-mem", action="store_true")
     parser.add_argument("--no-pin-mem", action="store_false", dest="pin_mem")
@@ -207,8 +206,9 @@ def get_args():
     parser.add_argument("--coeff_neighbor_collision_loss", type=float, default=0.0)
     parser.add_argument("--neighbor_collision_margin", type=float, default=2.0)
 
-    parser.add_argument("--alpha_planning_loss", type=float, default=1.0)
-    parser.add_argument("--alpha_neighbor_loss", type=float, default=0.1)
+    parser.add_argument("--alpha_planning_loss", type=float, default=0.0)
+    parser.add_argument("--alpha_neighbor_loss", type=float, default=0.0)
+    parser.add_argument("--turn_indicator_loss_weight", type=float, default=0.0)
 
     parser.add_argument("--use_velocity_representation", type=boolean, default=False)
 
@@ -235,7 +235,6 @@ def get_args():
         type=float,
         default=1.0,
     )
-
     parser.add_argument("--resume_model_path", type=str, default=None)
 
     parser.add_argument("--use_wandb", default=False, type=boolean)

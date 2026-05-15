@@ -60,7 +60,15 @@ def load_model_and_config(ckpt_path, device):
         state_dict = ckpt["ema_state_dict"]
 
     stripped = {k.replace("module.", ""): v for k, v in state_dict.items()}
-    model.load_state_dict(stripped, strict=False)
+    incompatible = model.load_state_dict(stripped, strict=False)
+    if incompatible.missing_keys:
+        print("WARNING: checkpoint is missing model keys:")
+        for key in incompatible.missing_keys:
+            print(f"  missing: {key}")
+    if incompatible.unexpected_keys:
+        print("WARNING: checkpoint has unexpected model keys:")
+        for key in incompatible.unexpected_keys:
+            print(f"  unexpected: {key}")
     model = model.to(device)
     model.eval()
 
@@ -110,21 +118,17 @@ def load_npz(npz_path, device):
         arr = ensure_batch_dim(key, data[key])
         inputs[key] = torch.tensor(arr, dtype=torch.float32, device=device)
 
-    if "ego_agent_past" in inputs:
-        inputs["ego_agent_past"] = heading_to_cos_sin(inputs["ego_agent_past"])
-    if "goal_pose" in inputs:
-        inputs["goal_pose"] = heading_to_cos_sin(inputs["goal_pose"])
-    if "ego_agent_future" in inputs:
-        inputs["ego_agent_future"] = heading_to_cos_sin(inputs["ego_agent_future"])
-    if "neighbor_agents_future" in inputs:
-        inputs["neighbor_agents_future"] = heading_to_cos_sin(inputs["neighbor_agents_future"])
-
     return inputs
 
 
 def prepare_inputs(inputs, config):
     inputs = {key: value.clone() for key, value in inputs.items()}
     B = inputs["ego_current_state"].shape[0]
+
+    if "ego_agent_past" in inputs:
+        inputs["ego_agent_past"] = heading_to_cos_sin(inputs["ego_agent_past"])
+    if "goal_pose" in inputs:
+        inputs["goal_pose"] = heading_to_cos_sin(inputs["goal_pose"])
 
     inputs["sampled_trajectories"] = torch.zeros(
         B, MAX_NUM_AGENTS, OUTPUT_T + 1, POSE_DIM, dtype=torch.float32, device=config.device
@@ -148,10 +152,29 @@ def extract_predictions(decoder_outputs, inputs, config):
     inputs_np = {
         k: v.cpu().numpy() if isinstance(v, torch.Tensor) else v for k, v in inputs.items()
     }
+    if "goal_pose" in inputs_np and inputs_np["goal_pose"].shape[-1] == 3:
+        goal_pose = inputs_np["goal_pose"]
+        inputs_np["goal_pose"] = np.concatenate(
+            [
+                goal_pose[..., :2],
+                np.cos(goal_pose[..., 2:3]),
+                np.sin(goal_pose[..., 2:3]),
+            ],
+            axis=-1,
+        )
     inputs_np["turn_indicator_pred"] = turn_indicator_pred
     inputs_np["prediction"] = prediction
 
     return inputs_np, prediction, turn_indicator_pred
+
+
+def get_active_neighbor_indices(inputs_np, limit=None):
+    neighbors = inputs_np["neighbor_agents_past"][0]
+    current = neighbors[:, -1, :4]
+    active = np.flatnonzero(np.any(np.abs(current) > 1e-6, axis=1)) + 1
+    if limit is not None:
+        active = active[:limit]
+    return active.tolist()
 
 
 def visualize_results(inputs_np, prediction, output_dir, npz_name, view_ranges=None, show=False):
@@ -167,14 +190,15 @@ def visualize_results(inputs_np, prediction, output_dir, npz_name, view_ranges=N
     )
 
     ax = axes_all[0] if len(view_ranges) == 1 else axes_all[0]  # type: ignore
-    for agent_idx in range(min(3, prediction.shape[0])):
+    agent_indices = [0] + get_active_neighbor_indices(inputs_np, limit=20)
+    for agent_idx in agent_indices:
         traj = prediction[agent_idx]
         valid = (traj[:, 0] != 0) | (traj[:, 1] != 0)
         if not valid.any():
             continue
         valid_traj = traj[valid]
         color = "cyan" if agent_idx == 0 else "magenta"
-        label = "Ego Prediction" if agent_idx == 0 else f"Neighbor {agent_idx} Prediction"
+        label = "Ego Prediction" if agent_idx == 0 else f"Neighbor {agent_idx - 1} Prediction"
         ax.plot(
             valid_traj[:, 0],
             valid_traj[:, 1],
@@ -229,11 +253,13 @@ def print_summary(inputs_np, prediction, turn_indicator_pred):
     print(f"\nPrediction shape: {prediction.shape}")
     print(f"  Ego final position: ({prediction[0, -1, 0]:.2f}, {prediction[0, -1, 1]:.2f})")
 
-    neighbor_count = 0
-    for i in range(1, prediction.shape[0]):
-        if (prediction[i, :, 0] != 0).any() or (prediction[i, :, 1] != 0).any():
-            neighbor_count += 1
-    print(f"  Active neighbors predicted: {neighbor_count}")
+    active_neighbor_indices = get_active_neighbor_indices(inputs_np)
+    predicted_neighbor_count = sum(
+        (prediction[i, :, 0] != 0).any() or (prediction[i, :, 1] != 0).any()
+        for i in active_neighbor_indices
+    )
+    print(f"  Active neighbors in scene: {len(active_neighbor_indices)}")
+    print(f"  Active neighbors predicted: {predicted_neighbor_count}")
     print("=" * 50)
 
 

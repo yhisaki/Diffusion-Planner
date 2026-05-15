@@ -20,6 +20,10 @@ mkdir -p ${SAVE_PATH}
 git show -s > ${SAVE_PATH}/git_show.txt 2>/dev/null || true
 git diff > ${SAVE_PATH}/git_diff.txt 2>/dev/null || true
 
+python3 compute_normalization.py \
+--data ${TRAIN_SET_LIST} \
+--output drifting_planner/normalization.json
+
 python3 train_drifting.py \
 --exp_name ${exp_name} \
 --train_set_list $TRAIN_SET_LIST \
@@ -29,7 +33,7 @@ python3 train_drifting.py \
 --train_epochs 100 \
 --batch_size 10 \
 --save_utd 10 \
---learning_rate 2e-4 \
+--learning_rate 3e-4 \
 --warm_up_epoch 5 \
 --drifting_loss_weight 1.0 \
 --drifting_temperatures 0.02 0.05 0.2 \

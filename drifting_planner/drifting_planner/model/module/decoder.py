@@ -14,6 +14,7 @@ class Decoder(nn.Module):
         self._predicted_neighbor_num = config.predicted_neighbor_num
         self._future_len = config.future_len
         self._state_normalizer: StateNormalizer = config.state_normalizer
+        self._observation_normalizer = config.observation_normalizer
 
         self.dit = DiT(
             depth=config.decoder_depth,
@@ -43,16 +44,25 @@ class Decoder(nn.Module):
         nn.init.constant_(self.dit.final_layer.proj[-1].bias, 0)
 
     def _prepare_current_states(self, inputs):
-        ego_current = inputs["ego_current_state"][:, None, :4]
-        neighbors_current = inputs["neighbor_agents_past"][
+        denorm_inputs = self._observation_normalizer.inverse(
+            {
+                "ego_current_state": inputs["ego_current_state"],
+                "neighbor_agents_past": inputs["neighbor_agents_past"],
+            }
+        )
+        ego_current_raw = denorm_inputs["ego_current_state"][:, None, :4]
+        neighbors_current_raw = denorm_inputs["neighbor_agents_past"][
             :, : self._predicted_neighbor_num, -1, :4
         ]
-        neighbor_current_mask = torch.sum(torch.ne(neighbors_current[..., :4], 0), dim=-1) == 0
+        neighbor_current_mask = (
+            torch.sum(torch.ne(neighbors_current_raw[..., :4], 0), dim=-1) == 0
+        )
         inputs["neighbor_current_mask"] = neighbor_current_mask
 
-        current_states = torch.cat([ego_current, neighbors_current], dim=1)
+        current_states_raw = torch.cat([ego_current_raw, neighbors_current_raw], dim=1)
+        current_states = self._state_normalizer(current_states_raw[:, :, None, :])[:, :, 0, :]
 
-        return current_states, neighbor_current_mask, ego_current, neighbors_current
+        return current_states, neighbor_current_mask, ego_current_raw, neighbors_current_raw
 
     def _compute_turn_indicator(self, ego_trajectory, encoding_pooled):
         turn_indicator_input = torch.cat([ego_trajectory, encoding_pooled], dim=-1)
@@ -108,7 +118,11 @@ class Decoder(nn.Module):
             }
 
             result = self._forward(encoding, merged_inputs, neighbor_current_mask, encoding_pooled)
-            result["prediction"] = self._state_normalizer.inverse(result["model_output"])[
-                :, :, 1:, :
-            ]
+            prediction_norm = result["model_output"][:, :, 1:, :].clone()
+            prediction_norm[..., :2] = prediction_norm[..., :2] + current_states[:, :, None, :2]
+            prediction = self._state_normalizer.inverse(prediction_norm)
+            prediction[:, 1:] = prediction[:, 1:].masked_fill(
+                neighbor_current_mask[..., None, None], 0.0
+            )
+            result["prediction"] = prediction
             return result
