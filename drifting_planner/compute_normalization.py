@@ -24,6 +24,13 @@ def heading_to_cos_sin(x):
     return np.concatenate([x[..., :2], np.cos(x[..., 2:3]), np.sin(x[..., 2:3])], axis=-1)
 
 
+def future_to_delta_state(future, current):
+    future_state = heading_to_cos_sin(future)
+    delta_state = future_state.copy()
+    delta_state[..., :2] = future[..., :2] - current[..., None, :2]
+    return delta_state
+
+
 class RunningStats:
     def __init__(self, feature_dim):
         self.feature_dim = feature_dim
@@ -77,6 +84,8 @@ def compute_normalization(npz_files, min_std):
     stats = {
         "ego": RunningStats(4),
         "neighbor": RunningStats(4),
+        "ego_delta": RunningStats(4),
+        "neighbor_delta": RunningStats(4),
         "ego_agent_past": RunningStats(4),
         "ego_current_state": RunningStats(10),
         "neighbor_agents_past": RunningStats(11),
@@ -94,16 +103,27 @@ def compute_normalization(npz_files, min_std):
         data = np.load(npz_file, allow_pickle=True)
 
         ego_past = heading_to_cos_sin(data["ego_agent_past"])
-        ego_future = heading_to_cos_sin(data["ego_agent_future"])
+        ego_future_raw = data["ego_agent_future"]
+        ego_future = heading_to_cos_sin(ego_future_raw)
+        ego_delta = future_to_delta_state(ego_future_raw, data["ego_current_state"][:4])
         neighbor_future_raw = data["neighbor_agents_future"]
         neighbor_future_mask = valid_rows(neighbor_future_raw)
         neighbor_future = heading_to_cos_sin(neighbor_future_raw)
+        neighbor_current_raw = data["neighbor_agents_past"][:, -1, :4]
+        neighbor_current_mask = valid_rows(neighbor_current_raw)
+        neighbor_delta = future_to_delta_state(neighbor_future_raw, neighbor_current_raw)
         goal_pose = heading_to_cos_sin(data["goal_pose"])
 
         update_sequence(stats, "ego_agent_past", ego_past)
         update_sequence(stats, "ego", ego_future)
+        update_sequence(stats, "ego_delta", ego_delta)
         stats["ego_current_state"].update(data["ego_current_state"][None, :])
         update_sequence(stats, "neighbor", neighbor_future[neighbor_future_mask])
+        update_sequence(
+            stats,
+            "neighbor_delta",
+            neighbor_delta[neighbor_future_mask & neighbor_current_mask[:, None]],
+        )
         update_sequence(stats, "neighbor_agents_past", data["neighbor_agents_past"])
         update_sequence(stats, "static_objects", data["static_objects"])
         update_sequence(stats, "lanes", data["lanes"])

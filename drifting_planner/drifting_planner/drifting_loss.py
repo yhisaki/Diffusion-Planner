@@ -1,22 +1,8 @@
-from typing import Callable, List, Optional, Tuple
+import math
+from typing import List, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
-
-
-def compute_kernel(x, y, tau):
-    """Compute exponential kernel k(x, y) = exp(-||x - y|| / tau).
-
-    Args:
-        x: [..., D] query points
-        y: [..., D] key points (broadcastable with x)
-        tau: temperature scalar
-
-    Returns:
-        kernel: [...] similarity values
-    """
-    dist = torch.linalg.norm(x - y, dim=-1)
-    return torch.exp(-dist / tau)
 
 
 def compute_drifting_field_single_temperature(
@@ -25,6 +11,7 @@ def compute_drifting_field_single_temperature(
     y_neg: torch.Tensor,
     tau: float,
     ignore_self_negatives: bool = False,
+    normalize_distance_by_dim: bool = True,
 ) -> torch.Tensor:
     """Compute the Algorithm A1 drifting field for one temperature.
 
@@ -45,6 +32,10 @@ def compute_drifting_field_single_temperature(
     """
     dist_pos = torch.cdist(x, y_pos)
     dist_neg = torch.cdist(x, y_neg)
+    if normalize_distance_by_dim:
+        distance_scale = math.sqrt(x.shape[-1])
+        dist_pos = dist_pos / distance_scale
+        dist_neg = dist_neg / distance_scale
 
     if ignore_self_negatives and x.shape[0] == y_neg.shape[0] and x.shape[0] > 1:
         eye = torch.eye(x.shape[0], dtype=torch.bool, device=x.device)
@@ -73,6 +64,7 @@ def compute_drifting_field(
     y_neg: torch.Tensor,
     temperatures: List[float],
     ignore_self_negatives: bool = False,
+    normalize_distance_by_dim: bool = True,
 ) -> torch.Tensor:
     """Compute anti-symmetric drifting field V_{p,q}(x).
 
@@ -97,6 +89,7 @@ def compute_drifting_field(
             y_neg,
             tau,
             ignore_self_negatives=ignore_self_negatives,
+            normalize_distance_by_dim=normalize_distance_by_dim,
         )
         if total_field is None:
             total_field = field
@@ -117,7 +110,6 @@ def compute_drifting_loss(
     y_pos: torch.Tensor,
     y_neg: torch.Tensor,
     temperatures: List[float],
-    feature_extractor: Optional[Callable] = None,
     ignore_self_negatives: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Compute drifting loss per Algorithm 1 in the paper.
@@ -129,26 +121,23 @@ def compute_drifting_loss(
         y_pos: [M, D] positive samples from data distribution
         y_neg: [K, D] negative samples from generated distribution
         temperatures: list of temperature values
-        feature_extractor: optional feature extractor phi for feature-space loss
         ignore_self_negatives: whether to mask the diagonal when y_neg is x
 
     Returns:
         loss: scalar drifting loss
         drift_norm: scalar ||V||^2 for monitoring
     """
-    if feature_extractor is not None:
-        x_feat = feature_extractor(x)
-        y_pos_feat = feature_extractor(y_pos)
-        y_neg_feat = feature_extractor(y_neg)
-    else:
-        x_feat = x
-        y_pos_feat = y_pos
-        y_neg_feat = y_neg
+    x_feat = x
+    y_pos_feat = y_pos
+    y_neg_feat = y_neg
 
     if x_feat.dim() > 2:
         x_feat = _flatten_features(x_feat)
         y_pos_feat = _flatten_features(y_pos_feat)
         y_neg_feat = _flatten_features(y_neg_feat)
+
+    if ignore_self_negatives and y_neg_feat.shape[0] < 2:
+        raise ValueError("At least two negative samples are required when self negatives are ignored.")
 
     V = compute_drifting_field(
         x_feat,
@@ -167,158 +156,42 @@ def compute_drifting_loss(
     return loss, drift_norm
 
 
-def compute_grouped_drifting_loss(
+def compute_scene_drifting_loss(
     x: torch.Tensor,
     y_pos: torch.Tensor,
-    y_neg: torch.Tensor,
-    valid_mask: torch.Tensor,
     temperatures: List[float],
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Compute drifting loss independently for each batch item.
+    """Compute drifting loss per conditional scene.
 
     Args:
-        x: [B, P, D] generated samples
-        y_pos: [B, P, D] positive samples
-        y_neg: [B, P, D] negative samples
-        valid_mask: [B, P] valid query/sample mask
+        x: [B, K, D] generated samples for each conditioning scene
+        y_pos: [B, M, D] positive data samples for each conditioning scene
         temperatures: list of temperature values
 
     Returns:
         loss: scalar drifting loss
         drift_norm: scalar drift norm
     """
+    if x.dim() != 3 or y_pos.dim() != 3:
+        raise ValueError("Expected x [B, K, D] and y_pos [B, M, D].")
+    if x.shape[0] != y_pos.shape[0] or x.shape[-1] != y_pos.shape[-1]:
+        raise ValueError("Generated and positive samples must share batch and feature dimensions.")
+    if x.shape[1] < 2:
+        raise ValueError("At least two generated samples are required for drifting negatives.")
+    if y_pos.shape[1] < 1:
+        raise ValueError("At least one positive sample is required.")
+
     losses = []
     drift_norms = []
-
-    for x_i, y_pos_i, y_neg_i, valid_i in zip(x, y_pos, y_neg, valid_mask):
-        if not torch.any(valid_i):
-            continue
-
-        x_valid = x_i[valid_i]
-        y_pos_valid = y_pos_i[valid_i]
-        y_neg_valid = y_neg_i[valid_i]
-
+    for x_i, y_pos_i in zip(x, y_pos):
         loss_i, drift_norm_i = compute_drifting_loss(
-            x_valid,
-            y_pos_valid,
-            y_neg_valid,
+            x_i,
+            y_pos_i,
+            x_i,
             temperatures,
             ignore_self_negatives=True,
         )
         losses.append(loss_i)
         drift_norms.append(drift_norm_i)
 
-    if not losses:
-        zero = x.sum() * 0.0
-        return zero, zero
-
     return torch.stack(losses).mean(), torch.stack(drift_norms).mean()
-
-
-def compute_masked_drifting_loss(
-    x: torch.Tensor,
-    y_pos: torch.Tensor,
-    y_neg: torch.Tensor,
-    valid_mask: torch.Tensor,
-    temperatures: List[float],
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Compute drifting loss over all valid samples in a mini-batch.
-
-    Args:
-        x: [..., D] generated samples
-        y_pos: [..., D] positive samples
-        y_neg: [..., D] negative samples
-        valid_mask: [...] valid sample mask
-        temperatures: list of temperature values
-
-    Returns:
-        loss: scalar drifting loss
-        drift_norm: scalar drift norm
-    """
-    x_flat = x.reshape(-1, x.shape[-1])
-    y_pos_flat = y_pos.reshape(-1, y_pos.shape[-1])
-    y_neg_flat = y_neg.reshape(-1, y_neg.shape[-1])
-    valid_flat = valid_mask.reshape(-1)
-
-    if not torch.any(valid_flat):
-        zero = x.sum() * 0.0
-        return zero, zero
-
-    return compute_drifting_loss(
-        x_flat[valid_flat],
-        y_pos_flat[valid_flat],
-        y_neg_flat[valid_flat],
-        temperatures,
-        ignore_self_negatives=True,
-    )
-
-
-def compute_drifting_loss_multi_scale(
-    x: torch.Tensor,
-    y_pos: torch.Tensor,
-    y_neg: torch.Tensor,
-    temperatures: List[float],
-    feature_extractor: Optional[Callable] = None,
-) -> Tuple[torch.Tensor, dict]:
-    """Compute drifting loss with multi-scale features (Eq. 7 in paper).
-
-    For feature extractors that return features at multiple scales/locations,
-    compute drifting loss at each scale and sum.
-
-    Args:
-        x: [N, ...] generated samples
-        y_pos: [M, ...] positive samples
-        y_neg: [K, ...] negative samples
-        temperatures: list of temperature values
-        feature_extractor: feature extractor that returns list of feature tensors
-
-    Returns:
-        loss: scalar total drifting loss
-        drift_norms: dict of drift norms per scale
-    """
-    x_feats: List[torch.Tensor]
-    y_pos_feats: List[torch.Tensor]
-    y_neg_feats: List[torch.Tensor]
-
-    if feature_extractor is not None:
-        x_feats_raw = feature_extractor(x)
-        y_pos_feats_raw = feature_extractor(y_pos)
-        y_neg_feats_raw = feature_extractor(y_neg)
-
-        if isinstance(x_feats_raw, (list, tuple)):
-            x_feats = list(x_feats_raw)
-            y_pos_feats = list(y_pos_feats_raw)
-            y_neg_feats = list(y_neg_feats_raw)
-        else:
-            x_feats = [x_feats_raw]
-            y_pos_feats = [y_pos_feats_raw]
-            y_neg_feats = [y_neg_feats_raw]
-    else:
-        x_feats = [_flatten_features(x)]
-        y_pos_feats = [_flatten_features(y_pos)]
-        y_neg_feats = [_flatten_features(y_neg)]
-
-    total_loss: torch.Tensor = torch.tensor(0.0, device=x.device)
-    drift_norms = {}
-
-    for j, (x_f, y_pos_f, y_neg_f) in enumerate(zip(x_feats, y_pos_feats, y_neg_feats)):
-        x_f = _flatten_features(x_f)
-        y_pos_f = _flatten_features(y_pos_f)
-        y_neg_f = _flatten_features(y_neg_f)
-
-        V = compute_drifting_field(
-            x_f,
-            y_pos_f,
-            y_neg_f,
-            temperatures,
-            ignore_self_negatives=True,
-        )
-
-        drift_norm = (V ** 2).sum(dim=-1).mean()
-        drift_norms[f"drift_norm_scale_{j}"] = drift_norm
-
-        x_drifted = x_f + V
-        scale_loss = ((x_f - x_drifted.detach()) ** 2).sum(dim=-1).mean()
-        total_loss = total_loss + scale_loss
-
-    return total_loss, drift_norms

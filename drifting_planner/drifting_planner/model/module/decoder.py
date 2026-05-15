@@ -3,7 +3,7 @@ import torch.nn as nn
 
 from drifting_planner.dimensions import TURN_INDICATOR_OUTPUT_DIM
 from drifting_planner.model.module.dit import DiT
-from drifting_planner.utils.normalizer import StateNormalizer
+from drifting_planner.utils.normalizer import StateNormalizer, TrajectoryNormalizer
 
 
 class Decoder(nn.Module):
@@ -14,6 +14,7 @@ class Decoder(nn.Module):
         self._predicted_neighbor_num = config.predicted_neighbor_num
         self._future_len = config.future_len
         self._state_normalizer: StateNormalizer = config.state_normalizer
+        self._trajectory_normalizer: TrajectoryNormalizer = config.trajectory_normalizer
         self._observation_normalizer = config.observation_normalizer
 
         self.dit = DiT(
@@ -118,9 +119,11 @@ class Decoder(nn.Module):
             }
 
             result = self._forward(encoding, merged_inputs, neighbor_current_mask, encoding_pooled)
-            prediction_norm = result["model_output"][:, :, 1:, :].clone()
-            prediction_norm[..., :2] = prediction_norm[..., :2] + current_states[:, :, None, :2]
-            prediction = self._state_normalizer.inverse(prediction_norm)
+            prediction_delta_norm = result["model_output"][:, :, 1:, :].clone()
+            current_states_raw = torch.cat([ego_current, neighbors_current], dim=1)
+            prediction = self._trajectory_normalizer.inverse_future(
+                prediction_delta_norm, current_states_raw
+            )
             prediction[:, 1:] = prediction[:, 1:].masked_fill(
                 neighbor_current_mask[..., None, None], 0.0
             )

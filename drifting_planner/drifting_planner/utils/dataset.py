@@ -1,5 +1,4 @@
 import json
-import os
 from pathlib import Path
 
 import numpy as np
@@ -25,7 +24,7 @@ def _collect_npz_files(path):
     raise ValueError(f"Unsupported path type: {path}. Must be a directory or .json file.")
 
 
-class DiffusionPlannerData(Dataset):
+class DriftingPlannerData(Dataset):
     def __init__(self, data_path):
         self.data_list = _collect_npz_files(data_path)
 

@@ -35,8 +35,11 @@ python3 train_drifting.py \
 --save_utd 10 \
 --learning_rate 3e-4 \
 --warm_up_epoch 5 \
---drifting_loss_weight 1.0 \
 --drifting_temperatures 0.02 0.05 0.2 \
 --ddp False \
 --num_workers 4 \
+--hidden_dim 64 \
+--encoder_mixer_depth 4 \
+--encoder_fusion_depth 4 \
+--drifting_num_samples 2 \
 2>&1 | tee ${SAVE_PATH}/train_log.txt

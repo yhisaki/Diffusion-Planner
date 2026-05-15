@@ -6,13 +6,17 @@ import pandas as pd
 import torch
 import wandb
 from drifting_planner.dimensions import *
-from drifting_planner.loss import loss_func, make_turn_indicator_gt
+from drifting_planner.loss import make_turn_indicator_gt
 from drifting_planner.model.drifting_planner import DriftingPlanner
 from drifting_planner.train_epoch import train_epoch
 from drifting_planner.utils.data_augmentation import StatePerturbation
-from drifting_planner.utils.dataset import DiffusionPlannerData
+from drifting_planner.utils.dataset import DriftingPlannerData
 from drifting_planner.utils.lr_schedule import CosineAnnealingWarmUpRestarts
-from drifting_planner.utils.normalizer import ObservationNormalizer, StateNormalizer
+from drifting_planner.utils.normalizer import (
+    ObservationNormalizer,
+    StateNormalizer,
+    TrajectoryNormalizer,
+)
 from drifting_planner.utils.train_utils import resume_model, set_seed
 from timm.utils.model_ema import ModelEma
 from torch import optim
@@ -155,7 +159,6 @@ def get_args():
 
     parser.add_argument("--future_len", type=int, default=OUTPUT_T)
     parser.add_argument("--time_len", type=int, default=INPUT_T + 1)
-    parser.add_argument("--ego_prediction_horizon", type=int, default=OUTPUT_T)
 
     parser.add_argument("--agent_state_dim", type=int, default=11)
     parser.add_argument("--agent_num", type=int, default=320)
@@ -194,25 +197,6 @@ def get_args():
     parser.add_argument("--ego_history_dropout_rate", type=float, default=0.6)
     parser.add_argument("--use_turn_indicators", type=boolean, default=True)
 
-    parser.add_argument("--coeff_position_lat_loss", type=float, default=1.0)
-    parser.add_argument("--coeff_position_lon_loss", type=float, default=1.0)
-    parser.add_argument("--coeff_heading_l2_loss", type=float, default=1.0)
-    parser.add_argument("--coeff_velocity", type=float, default=1.0)
-
-    parser.add_argument("--coeff_road_border_loss", type=float, default=0.0)
-    parser.add_argument("--road_border_margin", type=float, default=0.25)
-    parser.add_argument("--road_border_n_interp", type=int, default=2)
-
-    parser.add_argument("--coeff_neighbor_collision_loss", type=float, default=0.0)
-    parser.add_argument("--neighbor_collision_margin", type=float, default=2.0)
-
-    parser.add_argument("--alpha_planning_loss", type=float, default=0.0)
-    parser.add_argument("--alpha_neighbor_loss", type=float, default=0.0)
-    parser.add_argument("--turn_indicator_loss_weight", type=float, default=0.0)
-
-    parser.add_argument("--use_velocity_representation", type=boolean, default=False)
-
-    parser.add_argument("--guidance_scale", type=float, default=0.5)
     parser.add_argument("--device", type=str, default="cuda")
 
     parser.add_argument("--use_ema", default=True, type=boolean)
@@ -230,6 +214,9 @@ def get_args():
         nargs="+",
         default=[0.02, 0.05, 0.2],
     )
+    parser.add_argument("--drifting_num_samples", type=int, default=8)
+    parser.add_argument("--drifting_num_positive_samples", type=int, default=1)
+    parser.add_argument("--drifting_positive_noise_std", type=float, default=0.0)
     parser.add_argument(
         "--drifting_loss_weight",
         type=float,
@@ -246,6 +233,7 @@ def get_args():
     args = parser.parse_args()
 
     args.state_normalizer = StateNormalizer.from_json(args)
+    args.trajectory_normalizer = TrajectoryNormalizer.from_json(args)
     args.observation_normalizer = ObservationNormalizer.from_json(args)
 
     return args
@@ -271,7 +259,9 @@ def model_training(args):
 
         args_dict = vars(args)
         args_dict = {
-            k: v if not isinstance(v, (StateNormalizer, ObservationNormalizer)) else v.to_dict()
+            k: v
+            if not isinstance(v, (StateNormalizer, TrajectoryNormalizer, ObservationNormalizer))
+            else v.to_dict()
             for k, v in args_dict.items()
         }
         args_dict["model_type"] = "drifting"
@@ -293,8 +283,8 @@ def model_training(args):
         else None
     )
 
-    train_set = DiffusionPlannerData(args.train_set_list)
-    valid_set = DiffusionPlannerData(args.valid_set_list)
+    train_set = DriftingPlannerData(args.train_set_list)
+    valid_set = DriftingPlannerData(args.valid_set_list)
 
     train_sampler = DistributedSampler(
         train_set, num_replicas=ddp.get_world_size(), rank=global_rank, shuffle=True

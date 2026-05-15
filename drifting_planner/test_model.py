@@ -263,9 +263,20 @@ def print_summary(inputs_np, prediction, turn_indicator_pred):
     print("=" * 50)
 
 
+def find_latest_checkpoint(search_root="."):
+    search_root = Path(search_root)
+    pth_files = sorted(search_root.rglob("*.pth"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not pth_files:
+        print(f"ERROR: No .pth files found under {search_root.resolve()}")
+        sys.exit(1)
+    latest = pth_files[0]
+    print(f"No --ckpt specified; using latest checkpoint: {latest}")
+    return str(latest)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Test and visualize DriftingPlanner model")
-    parser.add_argument("--ckpt", type=str, required=True, help="Path to model checkpoint (.pth)")
+    parser.add_argument("--ckpt", type=str, default=None, help="Path to model checkpoint (.pth); auto-detects latest if omitted")
     parser.add_argument("--npz", type=str, required=True, help="Path to input data (.npz)")
     parser.add_argument("--output-dir", type=str, default="./test_output", help="Output directory")
     parser.add_argument("--device", type=str, default="cuda", help="Device to use")
@@ -273,7 +284,11 @@ def main():
         "--view-ranges", type=int, nargs="+", default=[60], help="View ranges in meters"
     )
     parser.add_argument("--show", action="store_true", help="Show plot with plt.show()")
+    parser.add_argument("--search-root", type=str, default=".", help="Root directory to search for checkpoints when --ckpt is omitted")
     args = parser.parse_args()
+
+    if args.ckpt is None:
+        args.ckpt = find_latest_checkpoint(args.search_root)
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")

@@ -39,6 +39,41 @@ class StateNormalizer:
         }
 
 
+class TrajectoryNormalizer(StateNormalizer):
+    @classmethod
+    def from_json(cls, args):
+        data = _load_default_normalization()
+        ego_key = "ego_delta" if "ego_delta" in data else "ego"
+        neighbor_key = "neighbor_delta" if "neighbor_delta" in data else "neighbor"
+        mean = [[data[ego_key]["mean"]]] + [
+            [data[neighbor_key]["mean"]]
+        ] * args.predicted_neighbor_num
+        std = [[data[ego_key]["std"]]] + [
+            [data[neighbor_key]["std"]]
+        ] * args.predicted_neighbor_num
+        return cls(mean, std)
+
+    @staticmethod
+    def _current_xy_for(data, current_states_raw):
+        if data.dim() == 4:
+            return current_states_raw[:, :, None, :2]
+        if data.dim() == 5:
+            return current_states_raw[:, None, :, None, :2]
+        raise ValueError("Expected trajectory shape [B, P, T, 4] or [B, M, P, T, 4].")
+
+    def normalize_future(self, future, current_states_raw):
+        delta = future.clone()
+        delta[..., :2] = delta[..., :2] - self._current_xy_for(delta, current_states_raw)
+        return self(delta)
+
+    def inverse_future(self, normalized_delta, current_states_raw):
+        future = self.inverse(normalized_delta)
+        future[..., :2] = future[..., :2] + self._current_xy_for(
+            future, current_states_raw
+        )
+        return future
+
+
 class ObservationNormalizer:
     def __init__(self, normalization_dict):
         self._normalization_dict = normalization_dict
@@ -48,7 +83,7 @@ class ObservationNormalizer:
         data = _load_default_normalization()
         ndt = {}
         for k, v in data.items():
-            if k not in ["ego", "neighbor"]:
+            if k not in ["ego", "neighbor", "ego_delta", "neighbor_delta"]:
                 ndt[k] = {
                     "mean": torch.tensor(v["mean"], dtype=torch.float32),
                     "std": torch.tensor(v["std"], dtype=torch.float32),
