@@ -183,8 +183,8 @@ def compute_scene_drifting_loss(
     if y_pos.shape[1] < 1:
         raise ValueError("At least one positive sample is required.")
 
-    losses = []
-    drift_norms = []
+    losses: List[torch.Tensor] = []
+    drift_norms: List[torch.Tensor] = []
     for x_i, y_pos_i in zip(x, y_pos):
         loss_i, drift_norm_i = compute_drifting_loss(
             x_i,

@@ -6,8 +6,8 @@ def make_turn_indicator_gt(
 ) -> torch.Tensor:
     from drifting_planner.dimensions import TURN_INDICATOR_OUTPUT_KEEP
 
-    turn_indicators_gt = turn_indicators.long()
-    turn_indicators_gt_keep = turn_indicators_gt[:, -1] == turn_indicators_gt[:, -2]
+    turn_indicators_gt: torch.Tensor = turn_indicators.long()
+    turn_indicators_gt_keep: torch.Tensor = turn_indicators_gt[:, -1] == turn_indicators_gt[:, -2]
     turn_indicators_gt = turn_indicators_gt[:, -1] * ~turn_indicators_gt_keep
     turn_indicators_gt = turn_indicators_gt + turn_indicators_gt_keep * TURN_INDICATOR_OUTPUT_KEEP
     return turn_indicators_gt

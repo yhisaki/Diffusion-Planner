@@ -1,17 +1,18 @@
 import json
 import random
+from typing import Any
 
 import numpy as np
 import torch
 
 
-def openjson(path):
+def openjson(path: str) -> dict[str, Any]:
     with open(path, "r", encoding="utf-8") as f:
-        dict = json.load(f)
-    return dict
+        d = json.load(f)
+    return d
 
 
-def set_seed(CUR_SEED):
+def set_seed(CUR_SEED: int) -> None:
     random.seed(CUR_SEED)
     np.random.seed(CUR_SEED)
     torch.manual_seed(CUR_SEED)
@@ -19,8 +20,10 @@ def set_seed(CUR_SEED):
     torch.backends.cudnn.benchmark = False
 
 
-def get_epoch_mean_loss(epoch_loss):
-    epoch_mean_loss = {}
+def get_epoch_mean_loss(
+    epoch_loss: list[dict[str, float | torch.Tensor]],
+) -> dict[str, float]:
+    epoch_mean_loss: dict[str, list[float]] = {}
     for current_loss in epoch_loss:
         for key, value in current_loss.items():
             if key in epoch_mean_loss:
@@ -30,13 +33,21 @@ def get_epoch_mean_loss(epoch_loss):
             else:
                 epoch_mean_loss[key] = [value if isinstance(value, (int, float)) else value.item()]
 
+    result: dict[str, float] = {}
     for key, values in epoch_mean_loss.items():
-        epoch_mean_loss[key] = np.mean(np.array(values))
+        result[key] = float(np.mean(np.array(values)))
 
-    return epoch_mean_loss
+    return result
 
 
-def resume_model(path: str, model, optimizer, scheduler, ema, device):
+def resume_model(
+    path: str,
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: Any,
+    ema: Any,
+    device: torch.device,
+) -> tuple[torch.nn.Module, torch.optim.Optimizer, Any, int, str | None, Any]:
     """
     load ckpt from path
     """
@@ -64,6 +75,7 @@ def resume_model(path: str, model, optimizer, scheduler, ema, device):
         print("no schedule found,")
 
     # load step
+    init_epoch: int
     try:
         init_epoch = ckpt["epoch"]
         print("Step load done")
@@ -71,6 +83,7 @@ def resume_model(path: str, model, optimizer, scheduler, ema, device):
         init_epoch = 0
 
     # Load wandb id
+    wandb_id: str | None
     try:
         wandb_id = ckpt["wandb_id"]
         print("wandb id load done")

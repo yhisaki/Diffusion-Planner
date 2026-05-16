@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from typing import Any
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -20,7 +24,7 @@ CLASS_TYPE_TURN_INDICATOR = 9
 CLASS_TYPE_NUM = 10
 
 
-def add_class_type(x, class_type):
+def add_class_type(x: torch.Tensor, class_type: int) -> torch.Tensor:
     B, T, D = x.shape
     assert D == 4, "Input tensor must have 4 features (x, y, cos, sin)"
     class_type_tensor = torch.zeros((B, T, CLASS_TYPE_NUM), device=x.device)
@@ -29,7 +33,7 @@ def add_class_type(x, class_type):
 
 
 class Encoder(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config: Any) -> None:
         super().__init__()
 
         self.hidden_dim = config.hidden_dim
@@ -130,7 +134,7 @@ class Encoder(nn.Module):
             torch.randn(1, config.route_num, config.hidden_dim)
         )
 
-        def _basic_init(m):
+        def _basic_init(m: nn.Module) -> None:
             if isinstance(m, nn.Linear):
                 torch.nn.init.xavier_uniform_(m.weight)
                 if isinstance(m, nn.Linear) and m.bias is not None:
@@ -148,7 +152,7 @@ class Encoder(nn.Module):
         nn.init.normal_(self.lane_encoder.speed_limit_emb.weight, std=0.02)
         nn.init.normal_(self.lane_encoder.attribute_emb.weight, std=0.02)
 
-    def forward(self, inputs):
+    def forward(self, inputs: dict[str, torch.Tensor]) -> torch.Tensor:
         ego = inputs["ego_agent_past"]
         if not self.use_ego_history:
             ego = torch.zeros_like(ego)
@@ -279,7 +283,7 @@ class Encoder(nn.Module):
 
 
 class SelfAttentionBlock(nn.Module):
-    def __init__(self, dim, heads, dropout):
+    def __init__(self, dim: int, heads: int, dropout: float) -> None:
         super().__init__()
         mlp_ratio = 4.0
 
@@ -293,14 +297,14 @@ class SelfAttentionBlock(nn.Module):
             in_features=dim, hidden_features=mlp_hidden_dim, act_layer=nn.GELU, drop=dropout
         )
 
-    def forward(self, x, mask):
+    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         x = x + self.drop_path(self.attn(self.norm1(x), x, x, key_padding_mask=mask)[0])
         x = x + self.drop_path(self.mlp(self.norm2(x)))
         return x
 
 
 class EgoEncoder(nn.Module):
-    def __init__(self, time_len, drop_path_rate, hidden_dim, depth):
+    def __init__(self, time_len: int, drop_path_rate: float, hidden_dim: int, depth: int) -> None:
         super().__init__()
         tokens_mlp_dim = 64
         channels_mlp_dim = 128
@@ -335,7 +339,7 @@ class EgoEncoder(nn.Module):
             drop=drop_path_rate,
         )
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         B, T, D = x.shape
         pos = x[:, -1].clone()
         pos = pos.unsqueeze(1)
@@ -359,7 +363,7 @@ class EgoEncoder(nn.Module):
 
 
 class NeighborEncoder(nn.Module):
-    def __init__(self, time_len, drop_path_rate, hidden_dim, depth):
+    def __init__(self, time_len: int, drop_path_rate: float, hidden_dim: int, depth: int) -> None:
         super().__init__()
         tokens_mlp_dim = 64
         channels_mlp_dim = 128
@@ -396,7 +400,7 @@ class NeighborEncoder(nn.Module):
             drop=drop_path_rate,
         )
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         neighbor_type = x[:, :, -1, 8:]
         x = x[..., :8]
 
@@ -436,7 +440,7 @@ class NeighborEncoder(nn.Module):
 
 
 class StaticEncoder(nn.Module):
-    def __init__(self, dim, drop_path_rate, hidden_dim):
+    def __init__(self, dim: int, drop_path_rate: float, hidden_dim: int) -> None:
         super().__init__()
 
         self._hidden_dim = hidden_dim
@@ -449,7 +453,7 @@ class StaticEncoder(nn.Module):
             drop=drop_path_rate,
         )
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         B, P, _ = x.shape
 
         pos = x[:, :, :4].clone()
@@ -471,7 +475,9 @@ class StaticEncoder(nn.Module):
 
 
 class LaneEncoder(nn.Module):
-    def __init__(self, lane_len, class_type, drop_path_rate, hidden_dim, depth):
+    def __init__(
+        self, lane_len: int, class_type: int, drop_path_rate: float, hidden_dim: int, depth: int
+    ) -> None:
         super().__init__()
         tokens_mlp_dim = 64
         channels_mlp_dim = 128
@@ -515,7 +521,9 @@ class LaneEncoder(nn.Module):
             drop=drop_path_rate,
         )
 
-    def forward(self, x, speed_limit, has_speed_limit):
+    def forward(
+        self, x: torch.Tensor, speed_limit: torch.Tensor, has_speed_limit: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         attribute = x[:, :, 0, 8:]
         x = x[..., :8]
 
@@ -564,7 +572,15 @@ class LaneEncoder(nn.Module):
 
 
 class LineEncoder(nn.Module):
-    def __init__(self, line_len, class_type, drop_path_rate, hidden_dim, depth, point_dim=2):
+    def __init__(
+        self,
+        line_len: int,
+        class_type: int,
+        drop_path_rate: float,
+        hidden_dim: int,
+        depth: int,
+        point_dim: int = 2,
+    ) -> None:
         super().__init__()
         self._class_type = class_type
         tokens_mlp_dim = 64
@@ -600,7 +616,7 @@ class LineEncoder(nn.Module):
             drop=drop_path_rate,
         )
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         B, P, V, D = x.shape
         diff_x = x[:, :, 1:, 0] - x[:, :, :-1, 0]
         diff_y = x[:, :, 1:, 1] - x[:, :, :-1, 1]
@@ -642,7 +658,7 @@ class LineEncoder(nn.Module):
 
 
 class GoalPoseEncoder(nn.Module):
-    def __init__(self, drop_path_rate, hidden_dim):
+    def __init__(self, drop_path_rate: float, hidden_dim: int) -> None:
         super().__init__()
         channels_mlp_dim = 128
 
@@ -665,7 +681,7 @@ class GoalPoseEncoder(nn.Module):
             drop=drop_path_rate,
         )
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         B, D = x.shape
         pos = x.clone()
         pos = pos.unsqueeze(1)
@@ -682,7 +698,7 @@ class GoalPoseEncoder(nn.Module):
 
 
 class FloatsEncoder(nn.Module):
-    def __init__(self, num_float, drop_path_rate, hidden_dim):
+    def __init__(self, num_float: int, drop_path_rate: float, hidden_dim: int) -> None:
         super().__init__()
         channels_mlp_dim = 128
 
@@ -705,7 +721,7 @@ class FloatsEncoder(nn.Module):
             drop=drop_path_rate,
         )
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         B, D = x.shape
         pos = torch.zeros((B, 4), device=x.device)
         pos[:, 2] = 1.0
@@ -723,7 +739,7 @@ class FloatsEncoder(nn.Module):
 
 
 class FusionEncoder(nn.Module):
-    def __init__(self, hidden_dim, num_heads, drop_path_rate, depth):
+    def __init__(self, hidden_dim: int, num_heads: int, drop_path_rate: float, depth: int) -> None:
         super().__init__()
 
         dpr = drop_path_rate
@@ -734,7 +750,7 @@ class FusionEncoder(nn.Module):
 
         self.norm = nn.LayerNorm(hidden_dim)
 
-    def forward(self, x, mask):
+    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         mask[:, 0] = False
 
         for b in self.blocks:

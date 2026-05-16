@@ -1,15 +1,19 @@
+from __future__ import annotations
+
 import torch
 import torch.nn as nn
 from timm.layers.mlp import Mlp
 
 
-def modulate(x, shift, scale):
+def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     x = x * (1 + scale) + shift
     return x
 
 
 class DiTBlock(nn.Module):
-    def __init__(self, dim=192, heads=6, dropout=0.1, mlp_ratio=4.0):
+    def __init__(
+        self, dim: int = 192, heads: int = 6, dropout: float = 0.1, mlp_ratio: float = 4.0
+    ) -> None:
         super().__init__()
         self.norm1 = nn.LayerNorm(dim)
         self.attn = nn.MultiheadAttention(dim, heads, dropout, batch_first=True)
@@ -23,7 +27,9 @@ class DiTBlock(nn.Module):
 
         self.mlp2 = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=nn.GELU, drop=0)
 
-    def forward(self, x, cond, cross_c, attn_mask):
+    def forward(
+        self, x: torch.Tensor, cond: torch.Tensor, cross_c: torch.Tensor, attn_mask: torch.Tensor
+    ) -> torch.Tensor:
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(
             cond
         ).chunk(6, dim=2)
@@ -45,7 +51,7 @@ class DiTBlock(nn.Module):
 
 
 class FinalLayer(nn.Module):
-    def __init__(self, hidden_size, output_size):
+    def __init__(self, hidden_size: int, output_size: int) -> None:
         super().__init__()
         self.norm_final = nn.LayerNorm(hidden_size)
         self.proj = nn.Sequential(
@@ -60,7 +66,7 @@ class FinalLayer(nn.Module):
             nn.SiLU(), nn.Linear(hidden_size, 2 * hidden_size, bias=True)
         )
 
-    def forward(self, x, cond):
+    def forward(self, x: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
         shift, scale = self.adaLN_modulation(cond).chunk(2, dim=2)
         x = modulate(self.norm_final(x), shift, scale)
         x = self.proj(x)
@@ -70,13 +76,13 @@ class FinalLayer(nn.Module):
 class DiT(nn.Module):
     def __init__(
         self,
-        depth,
-        output_dim,
-        hidden_dim=192,
-        heads=6,
-        dropout=0.1,
-        mlp_ratio=4.0,
-    ):
+        depth: int,
+        output_dim: int,
+        hidden_dim: int = 192,
+        heads: int = 6,
+        dropout: float = 0.1,
+        mlp_ratio: float = 4.0,
+    ) -> None:
         super().__init__()
 
         T = 81
@@ -101,7 +107,13 @@ class DiT(nn.Module):
         )
         self.final_layer = FinalLayer(hidden_dim, output_dim)
 
-    def forward(self, x, cond, cross_c, neighbor_current_mask):
+    def forward(
+        self,
+        x: torch.Tensor,
+        cond: torch.Tensor,
+        cross_c: torch.Tensor,
+        neighbor_current_mask: torch.Tensor,
+    ) -> torch.Tensor:
         assert x.dim() == 4, f"{x.dim()=}"
         B, P, T, D = x.shape
         current_state = x[:, :, 0, :]

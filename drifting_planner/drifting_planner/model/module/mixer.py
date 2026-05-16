@@ -1,9 +1,12 @@
+from __future__ import annotations
+
+import torch
 import torch.nn as nn
 from timm.layers import Mlp
 
 
 class MixerBlock(nn.Module):
-    def __init__(self, tokens_mlp_dim, channels_mlp_dim, drop_path_rate):
+    def __init__(self, tokens_mlp_dim: int, channels_mlp_dim: int, drop_path_rate: float) -> None:
         super().__init__()
 
         self.norm1 = nn.LayerNorm(channels_mlp_dim)
@@ -21,7 +24,7 @@ class MixerBlock(nn.Module):
             drop=drop_path_rate,
         )
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         y = self.norm1(x)
         y = y.permute(0, 2, 1)
         y = self.tokens_mlp(y)

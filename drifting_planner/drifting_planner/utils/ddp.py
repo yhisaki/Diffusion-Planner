@@ -1,13 +1,15 @@
 import os
 import subprocess
 from datetime import timedelta
+from typing import Any
 
 import torch
 import torch.distributed as dist
 from torch.distributed import init_process_group
+from torch.nn import Module
 
 
-def ddp_setup_universal(verbose=False, args=None):
+def ddp_setup_universal(verbose: bool = False, args: Any = None) -> tuple[int, int, int]:
     if args.ddp == False:
         print(f"do not use ddp, train on GPU 0")
         return 0, 0, 1
@@ -54,7 +56,7 @@ def ddp_setup_universal(verbose=False, args=None):
     return rank, gpu, world_size
 
 
-def setup_for_distributed(is_master):
+def setup_for_distributed(is_master: bool) -> None:
     """
     This function disables printing when not in master process
     """
@@ -70,26 +72,26 @@ def setup_for_distributed(is_master):
     __builtin__.print = print
 
 
-def get_world_size():
+def get_world_size() -> int:
     if not is_dist_avail_and_initialized():
         return 1
     return dist.get_world_size()
 
 
-def get_rank():
+def get_rank() -> int:
     if not is_dist_avail_and_initialized():
         return 0
     return dist.get_rank()
 
 
-def get_model(model, use_ddp):
+def get_model(model: Module, use_ddp: bool) -> Module:
     if use_ddp:
         return model.module
     else:
         return model
 
 
-def is_dist_avail_and_initialized():
+def is_dist_avail_and_initialized() -> bool:
     if not dist.is_available():
         return False
     if not dist.is_initialized():
@@ -97,11 +99,13 @@ def is_dist_avail_and_initialized():
     return True
 
 
-def reduce_and_average_losses(loss_dict, device):
+def reduce_and_average_losses(
+    loss_dict: dict[str, float], device: torch.device
+) -> dict[str, float]:
     torch.distributed.barrier()
     world_size = dist.get_world_size()
     for key in loss_dict.keys():
-        loss_tensor = torch.tensor([loss_dict[key].item()]).to(device)
+        loss_tensor = torch.tensor([loss_dict[key]]).to(device)
         dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
         loss_dict[key] = loss_tensor.item() / world_size
     return loss_dict

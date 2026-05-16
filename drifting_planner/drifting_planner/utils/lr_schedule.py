@@ -1,7 +1,13 @@
+from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LinearLR, MultiplicativeLR, SequentialLR
 
 
-def CosineAnnealingWarmUpRestarts(optimizer, epoch, warm_up_epoch, start_factor=0.1):
+def CosineAnnealingWarmUpRestarts(
+    optimizer: Optimizer,
+    epoch: int,
+    warm_up_epoch: int,
+    start_factor: float = 0.1,
+) -> SequentialLR:
     assert epoch >= warm_up_epoch
     T_warmup = warm_up_epoch
 

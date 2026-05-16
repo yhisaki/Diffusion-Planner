@@ -3,11 +3,15 @@ import torch
 
 from drifting_planner.utils.unicycle_accel_curvature import smoothing_future_trajectory
 
-NUM_REFINE = 20
-TIME_INTERVAL = 0.1
+NUM_REFINE: int = 20
+TIME_INTERVAL: float = 0.1
 
 
-def vector_transform(vector, transform_mat, bias=None):
+def vector_transform(
+    vector: torch.Tensor,
+    transform_mat: torch.Tensor,
+    bias: torch.Tensor | None = None,
+) -> torch.Tensor:
     """
     vector: (B, ..., 2)
     transform_mat: (B, 2, 2)
@@ -22,7 +26,7 @@ def vector_transform(vector, transform_mat, bias=None):
     return torch.bmm(transform_mat, vector).permute(0, 2, 1).reshape(*shape)  # (B, ..., 2)
 
 
-def heading_transform(heading, transform_mat):
+def heading_transform(heading: torch.Tensor, transform_mat: torch.Tensor) -> torch.Tensor:
     """
     heading: (B, ...)
     transform_mat: (B, 2, 2)
@@ -57,21 +61,21 @@ class StatePerturbation:
         :param high: Parameter to set upper bound vector of the Uniform noise on [x, y, yaw, vx, vy, ax, ay, steering angle, yaw rate].
         :param augment_prob: probability between 0 and 1 of applying the data augmentation
         """
-        self._augment_prob = augment_prob
-        self._device = torch.device(device)
+        self._augment_prob: float = augment_prob
+        self._device: torch.device = torch.device(device)
         lo = ([0.0, -0.75, -0.2, -1, -0.5, -0.2, -0.1, 0.0, 0.0],)
         hi = ([0.0, +0.75, +0.2, +1, +0.5, +0.2, +0.1, 0.0, 0.0],)
-        self._low = torch.tensor(lo).to(self._device)
-        self._high = torch.tensor(hi).to(self._device)
-        self._wheel_base = wheel_base
+        self._low: torch.Tensor = torch.tensor(lo).to(self._device)
+        self._high: torch.Tensor = torch.tensor(hi).to(self._device)
+        self._wheel_base: float = wheel_base
 
-        self.num_refine = NUM_REFINE
-        self.time_interval = TIME_INTERVAL
+        self.num_refine: int = NUM_REFINE
+        self.time_interval: float = TIME_INTERVAL
 
         REFINE_HORIZON = NUM_REFINE * TIME_INTERVAL
 
         T = REFINE_HORIZON + TIME_INTERVAL
-        self.coeff_matrix = torch.linalg.inv(
+        self.coeff_matrix: torch.Tensor = torch.linalg.inv(
             torch.tensor(
                 [
                     [1, 0, 0, 0, 0, 0],
@@ -85,12 +89,17 @@ class StatePerturbation:
                 dtype=torch.float32,
             )
         )
-        self.t_matrix = torch.pow(
+        self.t_matrix: torch.Tensor = torch.pow(
             torch.linspace(TIME_INTERVAL, REFINE_HORIZON, NUM_REFINE).unsqueeze(1),
             torch.arange(6).unsqueeze(0),
         ).to(device=device)  # shape (B, N+1)
 
-    def __call__(self, inputs, ego_future, neighbors_future):
+    def __call__(
+        self,
+        inputs: dict[str, torch.Tensor],
+        ego_future: torch.Tensor,
+        neighbors_future: torch.Tensor,
+    ) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor]:
         aug_flag, aug_ego_current_state = self.augment(inputs)
 
         # Interpolate future trajectory
@@ -103,7 +112,7 @@ class StatePerturbation:
 
         return self.centric_transform(inputs, ego_future, neighbors_future)
 
-    def augment(self, inputs):
+    def augment(self, inputs: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
         # Only aug current state
         ego_current_state = inputs["ego_current_state"].clone()
 
@@ -154,7 +163,7 @@ class StatePerturbation:
     def normalize_angle(self, angle: np.ndarray | torch.Tensor) -> np.ndarray | torch.Tensor:
         return (angle + np.pi) % (2 * np.pi) - np.pi
 
-    def get_transform_matrix_batch(self, cur_state):
+    def get_transform_matrix_batch(self, cur_state: torch.Tensor) -> torch.Tensor:
         processed_input = torch.column_stack(
             (
                 cur_state[:, 2],  # cos
@@ -176,7 +185,7 @@ class StatePerturbation:
         inputs: torch.Tensor,
         ego_future: torch.Tensor,
         neighbors_future: torch.Tensor,
-    ):
+    ) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor]:
         cur_state = inputs["ego_current_state"].clone()
         center_xy = cur_state[:, :2]
         transform_matrix = self.get_transform_matrix_batch(cur_state)
@@ -318,7 +327,12 @@ class StatePerturbation:
 
         return inputs, ego_future, neighbors_future
 
-    def interpolation_future_trajectory(self, aug_current_state, ego_future, keep_remaining=True):
+    def interpolation_future_trajectory(
+        self,
+        aug_current_state: torch.Tensor,
+        ego_future: torch.Tensor,
+        keep_remaining: bool = True,
+    ) -> torch.Tensor:
         """
         refine future trajectory with quintic Hermite interpolation
 

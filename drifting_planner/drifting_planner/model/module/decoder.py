@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from typing import Any
+
 import torch
 import torch.nn as nn
 
@@ -7,7 +11,7 @@ from drifting_planner.utils.normalizer import StateNormalizer, TrajectoryNormali
 
 
 class Decoder(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config: Any) -> None:
         super().__init__()
 
         dpr = config.decoder_drop_path_rate
@@ -28,7 +32,7 @@ class Decoder(nn.Module):
             2 * (self._future_len // 10) + config.hidden_dim, TURN_INDICATOR_OUTPUT_DIM
         )
 
-        def _basic_init(m):
+        def _basic_init(m: nn.Module) -> None:
             if isinstance(m, nn.Linear):
                 torch.nn.init.xavier_uniform_(m.weight)
                 if isinstance(m, nn.Linear) and m.bias is not None:
@@ -44,7 +48,9 @@ class Decoder(nn.Module):
         nn.init.constant_(self.dit.final_layer.proj[-1].weight, 0)
         nn.init.constant_(self.dit.final_layer.proj[-1].bias, 0)
 
-    def _prepare_current_states(self, inputs):
+    def _prepare_current_states(
+        self, inputs: dict[str, torch.Tensor]
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         denorm_inputs = self._observation_normalizer.inverse(
             {
                 "ego_current_state": inputs["ego_current_state"],
@@ -63,11 +69,19 @@ class Decoder(nn.Module):
 
         return current_states, neighbor_current_mask, ego_current_raw, neighbors_current_raw
 
-    def _compute_turn_indicator(self, ego_trajectory, encoding_pooled):
+    def _compute_turn_indicator(
+        self, ego_trajectory: torch.Tensor, encoding_pooled: torch.Tensor
+    ) -> torch.Tensor:
         turn_indicator_input = torch.cat([ego_trajectory, encoding_pooled], dim=-1)
         return self.turn_indicator_predictor(turn_indicator_input)
 
-    def _forward(self, encoding, inputs, neighbor_current_mask, encoding_pooled):
+    def _forward(
+        self,
+        encoding: torch.Tensor,
+        inputs: dict[str, torch.Tensor],
+        neighbor_current_mask: torch.Tensor,
+        encoding_pooled: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
         B = encoding.shape[0]
         P = 1 + self._predicted_neighbor_num
         T = self._future_len
@@ -92,7 +106,9 @@ class Decoder(nn.Module):
             "turn_indicator_logit": turn_indicator_logit,
         }
 
-    def forward(self, encoding, inputs):
+    def forward(
+        self, encoding: torch.Tensor, inputs: dict[str, torch.Tensor]
+    ) -> dict[str, torch.Tensor]:
         current_states, neighbor_current_mask, ego_current, neighbors_current = (
             self._prepare_current_states(inputs)
         )

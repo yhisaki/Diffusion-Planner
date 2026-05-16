@@ -1,13 +1,19 @@
+import argparse
+from typing import Any
+
 import torch
+from timm.utils.model_ema import ModelEma
 from torch import nn
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from drifting_planner.drifting_loss import compute_scene_drifting_loss
 from drifting_planner.utils import ddp
+from drifting_planner.utils.data_augmentation import StatePerturbation
 from drifting_planner.utils.train_utils import get_epoch_mean_loss
 
 
-def heading_to_cos_sin(x):
+def heading_to_cos_sin(x: torch.Tensor) -> torch.Tensor:
     return torch.cat(
         [
             x[..., :2],
@@ -18,8 +24,8 @@ def heading_to_cos_sin(x):
     )
 
 
-def _repeat_batch_inputs(inputs, repeats, batch_size):
-    repeated = {}
+def _repeat_batch_inputs(inputs: dict[str, Any], repeats: int, batch_size: int) -> dict[str, Any]:
+    repeated: dict[str, Any] = {}
     for key, value in inputs.items():
         if torch.is_tensor(value) and value.shape[0] == batch_size:
             repeated[key] = value.repeat_interleave(repeats, dim=0)
@@ -28,7 +34,9 @@ def _repeat_batch_inputs(inputs, repeats, batch_size):
     return repeated
 
 
-def _make_positive_samples(y_pos, num_positive_samples, positive_noise_std):
+def _make_positive_samples(
+    y_pos: torch.Tensor, num_positive_samples: int, positive_noise_std: float
+) -> torch.Tensor:
     if y_pos.dim() == 2:
         y_pos = y_pos[:, None]
     if y_pos.shape[1] >= num_positive_samples:
@@ -41,8 +49,15 @@ def _make_positive_samples(y_pos, num_positive_samples, positive_noise_std):
     return y_pos
 
 
-def train_epoch(data_loader, model, optimizer, args, ema, aug=None):
-    epoch_loss = []
+def train_epoch(
+    data_loader: DataLoader | tqdm,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    args: argparse.Namespace,
+    ema: ModelEma | None,
+    aug: StatePerturbation | None = None,
+) -> tuple[dict[str, float], float]:
+    epoch_loss: list[dict[str, Any]] = []
 
     model.train()
 
@@ -52,10 +67,10 @@ def train_epoch(data_loader, model, optimizer, args, ema, aug=None):
     if ddp.get_rank() == 0:
         data_loader = tqdm(data_loader, desc="Training", unit="batch")
 
-    temperatures = args.drifting_temperatures
-    num_generated_samples = args.drifting_num_samples
-    num_positive_samples = args.drifting_num_positive_samples
-    positive_noise_std = args.drifting_positive_noise_std
+    temperatures: list[float] = args.drifting_temperatures
+    num_generated_samples: int = args.drifting_num_samples
+    num_positive_samples: int = args.drifting_num_positive_samples
+    positive_noise_std: float = args.drifting_positive_noise_std
 
     if num_generated_samples < 2:
         raise ValueError("--drifting_num_samples must be at least 2.")
@@ -202,7 +217,7 @@ def train_epoch(data_loader, model, optimizer, args, ema, aug=None):
             temperatures,
         )
 
-        loss = {}
+        loss: dict[str, Any] = {}
         loss["drifting_loss"] = drifting_loss_val
         loss["drift_norm"] = drift_norm
         loss["generated_sample_std"] = x_flat.detach().std(dim=1).mean()
