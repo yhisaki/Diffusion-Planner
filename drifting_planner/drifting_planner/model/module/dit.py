@@ -15,17 +15,13 @@ class DiTBlock(nn.Module):
         self.attn = nn.MultiheadAttention(dim, heads, dropout, batch_first=True)
         self.norm2 = nn.LayerNorm(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
-        self.mlp1 = Mlp(
-            in_features=dim, hidden_features=mlp_hidden_dim, act_layer=nn.GELU, drop=0
-        )
+        self.mlp1 = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=nn.GELU, drop=0)
         self.adaLN_modulation = nn.Sequential(nn.SiLU(), nn.Linear(dim, 6 * dim, bias=True))
         self.norm3 = nn.LayerNorm(dim)
         self.cross_attn = nn.MultiheadAttention(dim, heads, dropout, batch_first=True)
         self.norm4 = nn.LayerNorm(dim)
 
-        self.mlp2 = Mlp(
-            in_features=dim, hidden_features=mlp_hidden_dim, act_layer=nn.GELU, drop=0
-        )
+        self.mlp2 = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=nn.GELU, drop=0)
 
     def forward(self, x, cond, cross_c, attn_mask):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(

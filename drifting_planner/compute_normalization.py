@@ -4,7 +4,6 @@ from pathlib import Path
 
 import numpy as np
 
-
 DEFAULT_OUTPUT = Path(__file__).parent / "drifting_planner" / "normalization.json"
 
 
@@ -154,8 +153,12 @@ def compute_normalization(npz_files, min_std):
 
 def main():
     parser = argparse.ArgumentParser(description="Compute DriftingPlanner normalization stats")
-    parser.add_argument("--data", required=True, help="Training data directory, .json list, or .npz")
-    parser.add_argument("--output", default=str(DEFAULT_OUTPUT), help="Output normalization.json path")
+    parser.add_argument(
+        "--data", required=True, help="Training data directory, .json list, or .npz"
+    )
+    parser.add_argument(
+        "--output", default=str(DEFAULT_OUTPUT), help="Output normalization.json path"
+    )
     parser.add_argument("--min-std", type=float, default=1e-3)
     parser.add_argument("--max-files", type=int, default=None)
     args = parser.parse_args()

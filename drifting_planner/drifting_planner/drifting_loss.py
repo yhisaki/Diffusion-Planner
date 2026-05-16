@@ -137,7 +137,9 @@ def compute_drifting_loss(
         y_neg_feat = _flatten_features(y_neg_feat)
 
     if ignore_self_negatives and y_neg_feat.shape[0] < 2:
-        raise ValueError("At least two negative samples are required when self negatives are ignored.")
+        raise ValueError(
+            "At least two negative samples are required when self negatives are ignored."
+        )
 
     V = compute_drifting_field(
         x_feat,
@@ -147,7 +149,7 @@ def compute_drifting_loss(
         ignore_self_negatives=ignore_self_negatives,
     )
 
-    drift_norm = (V ** 2).sum(dim=-1).mean()
+    drift_norm = (V**2).sum(dim=-1).mean()
 
     x_drifted = x_feat + V
 

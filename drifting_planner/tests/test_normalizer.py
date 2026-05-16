@@ -1,5 +1,4 @@
 import torch
-
 from drifting_planner.utils.normalizer import TrajectoryNormalizer
 
 

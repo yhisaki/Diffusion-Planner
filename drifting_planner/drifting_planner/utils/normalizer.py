@@ -48,9 +48,7 @@ class TrajectoryNormalizer(StateNormalizer):
         mean = [[data[ego_key]["mean"]]] + [
             [data[neighbor_key]["mean"]]
         ] * args.predicted_neighbor_num
-        std = [[data[ego_key]["std"]]] + [
-            [data[neighbor_key]["std"]]
-        ] * args.predicted_neighbor_num
+        std = [[data[ego_key]["std"]]] + [[data[neighbor_key]["std"]]] * args.predicted_neighbor_num
         return cls(mean, std)
 
     @staticmethod
@@ -68,9 +66,7 @@ class TrajectoryNormalizer(StateNormalizer):
 
     def inverse_future(self, normalized_delta, current_states_raw):
         future = self.inverse(normalized_delta)
-        future[..., :2] = future[..., :2] + self._current_xy_for(
-            future, current_states_raw
-        )
+        future[..., :2] = future[..., :2] + self._current_xy_for(future, current_states_raw)
         return future
 
 

@@ -93,4 +93,3 @@ def test_high_dimensional_scene_loss_does_not_underflow_to_zero():
     assert drift_norm.detach().item() > 0
     assert x.grad is not None
     assert torch.any(x.grad != 0)
-

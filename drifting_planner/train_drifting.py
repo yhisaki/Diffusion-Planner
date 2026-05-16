@@ -76,9 +76,7 @@ def validate_model(model, val_loader, args):
         ego_future = inputs["ego_agent_future"]
         ego_future = heading_to_cos_sin(ego_future)
         neighbors_future = inputs["neighbor_agents_future"]
-        neighbor_future_mask = (
-            torch.sum(torch.ne(neighbors_future[..., :3], 0), dim=-1) == 0
-        )
+        neighbor_future_mask = torch.sum(torch.ne(neighbors_future[..., :3], 0), dim=-1) == 0
         neighbors_future = heading_to_cos_sin(neighbors_future)
         neighbors_future[neighbor_future_mask] = 0.0
 
@@ -94,21 +92,15 @@ def validate_model(model, val_loader, args):
         P = 1 + Pn
         prediction = outputs["prediction"][:, :P, :, :]
 
-        neighbor_current_mask = (
-            torch.sum(torch.ne(neighbors_current[..., :4], 0), dim=-1) == 0
-        )
+        neighbor_current_mask = torch.sum(torch.ne(neighbors_current[..., :4], 0), dim=-1) == 0
         neighbor_mask = torch.concat(
             (neighbor_current_mask.unsqueeze(-1), neighbor_future_mask), dim=-1
         )
 
-        gt_future = torch.cat(
-            [ego_future[:, None, :, :], neighbors_future[..., :]], dim=1
-        )
+        gt_future = torch.cat([ego_future[:, None, :, :], neighbors_future[..., :]], dim=1)
         current_states = torch.cat([ego_current[:, None], neighbors_current], dim=1)
 
-        all_gt = torch.cat(
-            [current_states[:, :, None, :], gt_future], dim=2
-        )
+        all_gt = torch.cat([current_states[:, :, None, :], gt_future], dim=2)
         all_gt[:, 1:][neighbor_mask] = 0.0
 
         prediction = outputs["prediction"]
@@ -144,7 +136,8 @@ def validate_model(model, val_loader, args):
         "avg_loss_ego": avg_loss_ego,
         "avg_loss_neighbor": avg_loss_neighbor,
         "turn_indicator_accuracy": turn_indicator_correct / max(turn_indicator_total, 1),
-        "turn_indicator_change_accuracy": turn_indicator_change_correct / max(turn_indicator_change_total, 1),
+        "turn_indicator_change_accuracy": turn_indicator_change_correct
+        / max(turn_indicator_change_total, 1),
         "turn_indicator_change_total": turn_indicator_change_total,
     }
 
@@ -456,9 +449,7 @@ def model_training(args):
             model_dict = {
                 "epoch": epoch + 1,
                 "model": drifting_planner.state_dict(),
-                "ema_state_dict": (
-                    model_ema.ema.state_dict() if model_ema is not None else None
-                ),
+                "ema_state_dict": (model_ema.ema.state_dict() if model_ema is not None else None),
                 "optimizer": optimizer.state_dict(),
                 "schedule": scheduler.state_dict(),
                 "loss": valid_loss_ego,

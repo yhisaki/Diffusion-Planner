@@ -213,9 +213,9 @@ def draw_neighbor_agents(ax, inputs):
         color = ["blue", "green", "purple"][vehicle_type] if vehicle_type < 3 else "blue"
 
         # Collect past trajectory
-        past_points = np.array([
-            [neighbors[i, t, 0], neighbors[i, t, 1]] for t in range(last_timestep + 1)
-        ])
+        past_points = np.array(
+            [[neighbors[i, t, 0], neighbors[i, t, 1]] for t in range(last_timestep + 1)]
+        )
         if len(past_points) > 1:
             past_lines.append(past_points)
             past_colors.append(color)

@@ -94,9 +94,7 @@ def train_epoch(data_loader, model, optimizer, args, ema, aug=None):
             neighbors_future_samples = neighbors_future
             neighbor_future_mask_samples = neighbor_future_mask
         else:
-            raise ValueError(
-                "Expected neighbor futures shape [B, Pn, T, 3] or [B, M, Pn, T, 3]."
-            )
+            raise ValueError("Expected neighbor futures shape [B, Pn, T, 3] or [B, M, Pn, T, 3].")
 
         B = inputs["ego_current_state"].shape[0]
         positive_data_samples = ego_future_samples.shape[1]
@@ -109,9 +107,7 @@ def train_epoch(data_loader, model, optimizer, args, ema, aug=None):
         ego_current_state_raw = inputs["ego_current_state"]
         ego_current_raw = ego_current_state_raw[:, :4]
         neighbors_current_raw = inputs["neighbor_agents_past"][:, :Pn, -1, :4]
-        neighbor_current_mask = (
-            torch.sum(torch.ne(neighbors_current_raw[..., :4], 0), dim=-1) == 0
-        )
+        neighbor_current_mask = torch.sum(torch.ne(neighbors_current_raw[..., :4], 0), dim=-1) == 0
 
         inputs = args.observation_normalizer(inputs)
 
@@ -136,9 +132,7 @@ def train_epoch(data_loader, model, optimizer, args, ema, aug=None):
         )
         neighbor_mask = torch.cat(
             [
-                neighbor_current_mask[:, None, :, None].expand(
-                    -1, positive_data_samples, -1, -1
-                ),
+                neighbor_current_mask[:, None, :, None].expand(-1, positive_data_samples, -1, -1),
                 neighbor_future_mask_samples,
             ],
             dim=-1,
@@ -184,8 +178,7 @@ def train_epoch(data_loader, model, optimizer, args, ema, aug=None):
         valid_agent_mask = torch.cat(
             [
                 torch.ones(B, 1, dtype=torch.bool, device=neighbor_future_mask_samples.device),
-                (~neighbor_current_mask)
-                & (~neighbor_future_mask_samples.all(dim=-1).all(dim=1)),
+                (~neighbor_current_mask) & (~neighbor_future_mask_samples.all(dim=-1).all(dim=1)),
             ],
             dim=1,
         )

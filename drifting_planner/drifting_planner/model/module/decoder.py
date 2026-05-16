@@ -55,9 +55,7 @@ class Decoder(nn.Module):
         neighbors_current_raw = denorm_inputs["neighbor_agents_past"][
             :, : self._predicted_neighbor_num, -1, :4
         ]
-        neighbor_current_mask = (
-            torch.sum(torch.ne(neighbors_current_raw[..., :4], 0), dim=-1) == 0
-        )
+        neighbor_current_mask = torch.sum(torch.ne(neighbors_current_raw[..., :4], 0), dim=-1) == 0
         inputs["neighbor_current_mask"] = neighbor_current_mask
 
         current_states_raw = torch.cat([ego_current_raw, neighbors_current_raw], dim=1)
@@ -74,9 +72,7 @@ class Decoder(nn.Module):
         P = 1 + self._predicted_neighbor_num
         T = self._future_len
 
-        sampled_trajectories = inputs["sampled_trajectories"].reshape(
-            B, P, (1 + T), 4
-        )
+        sampled_trajectories = inputs["sampled_trajectories"].reshape(B, P, (1 + T), 4)
 
         gt_trajectories = inputs.get("gt_trajectories")
         if gt_trajectories is not None:
