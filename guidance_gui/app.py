@@ -17,7 +17,7 @@ import random
 from pathlib import Path
 
 import gradio as gr
-import matplotlib.cm as cm
+import matplotlib
 import numpy as np
 import torch
 from matplotlib.figure import Figure
@@ -31,7 +31,7 @@ from guidance_gui.generate_samples import generate_samples
 from guidance_gui.guidance_ui import _DEFAULT_PROTOTYPES_PATH, build_guidance_panel, make_guidance_set_config
 
 
-_CMAP = cm.get_cmap("tab10")
+_CMAP = matplotlib.colormaps["tab10"]
 
 
 
