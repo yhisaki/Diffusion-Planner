@@ -61,6 +61,12 @@ class TrainingDataViewer:
         self.current_index = 0
         return self.load_current(*args)
 
+    def download_npz(self) -> str:
+        if not self.npz_paths:
+            return ""
+        idx = max(0, min(self.current_index, len(self.npz_paths) - 1))
+        return str(self.npz_paths[idx])
+
 
 def go_empty() -> "go.Figure":
     """Return an empty Plotly figure (placeholder)."""
@@ -91,6 +97,7 @@ def build_interface(viewer: TrainingDataViewer) -> gr.Blocks:
                 with gr.Row():
                     btn_shuffle = gr.Button("Shuffle", size="sm")
                     btn_reload = gr.Button("Reload", size="sm")
+                btn_download = gr.DownloadButton("Download this NPZ")
 
                 gr.Markdown("### Display")
                 time_step_sl = gr.Slider(0, 79, value=0, step=1, label="Time Step Marker (0=hidden)")
@@ -116,6 +123,7 @@ def build_interface(viewer: TrainingDataViewer) -> gr.Blocks:
 
         btn_shuffle.click(viewer.shuffle, inputs=_gen_inputs, outputs=_outputs)
         btn_reload.click(viewer.load_current, inputs=_gen_inputs, outputs=_outputs)
+        btn_download.click(viewer.download_npz, inputs=[], outputs=btn_download)
         sample_slider.change(viewer.jump, inputs=[sample_slider] + _gen_inputs, outputs=_outputs)
 
         for slider in [time_step_sl]:
