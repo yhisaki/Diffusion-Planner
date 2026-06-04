@@ -29,6 +29,7 @@ from diffusion_planner.grpo_utils import (
 from diffusion_planner.model.module.decoder import compute_training_loss
 from diffusion_planner.train_epoch import heading_to_cos_sin
 from diffusion_planner.utils import ddp
+from diffusion_planner.utils.trajectory_transform import transform_future_to_agent_frame
 from diffusion_planner.utils.train_utils import get_epoch_mean_loss
 
 
@@ -40,6 +41,10 @@ def _neighbor_future_world(neighbor_future_raw: torch.Tensor):
     return neighbors_future, mask
 
 
+def _neighbor_future_agent_frame(neighbors_future, neighbor_current, mask):
+    return transform_future_to_agent_frame(neighbors_future, neighbor_current, invalid_mask=mask)
+
+
 def _sft_step(raw_inputs, model, optimizer, args, ema):
     """A standard supervised training step on the real GT (mirrors ``train_epoch``)."""
     inputs = dict(raw_inputs)
@@ -48,6 +53,11 @@ def _sft_step(raw_inputs, model, optimizer, args, ema):
 
     ego_future = heading_to_cos_sin(inputs["ego_agent_future"])
     neighbors_future, neighbor_future_mask = _neighbor_future_world(inputs["neighbor_agents_future"])
+    inputs["neighbor_agents_future_ego_frame"] = neighbors_future.clone()
+    neighbors_current = inputs["neighbor_agents_past"][:, : neighbors_future.shape[1], -1, :4]
+    neighbors_future = _neighbor_future_agent_frame(
+        neighbors_future, neighbors_current, neighbor_future_mask
+    )
     inputs = args.observation_normalizer(inputs)
 
     optimizer.zero_grad()
@@ -91,8 +101,12 @@ def _grpo_step(raw_inputs, model, optimizer, args, ema, collider_injector):
     exp["ego_agent_past"] = heading_to_cos_sin(exp["ego_agent_past"])
     exp["goal_pose"] = heading_to_cos_sin(exp["goal_pose"])
 
-    neighbors_future, neighbor_future_mask = _neighbor_future_world(exp["neighbor_agents_future"])
+    neighbors_future_ego, neighbor_future_mask = _neighbor_future_world(exp["neighbor_agents_future"])
     neighbors_future_valid = ~neighbor_future_mask
+    neighbors_current = exp["neighbor_agents_past"][:, : neighbors_future_ego.shape[1], -1, :4]
+    neighbors_future = _neighbor_future_agent_frame(
+        neighbors_future_ego, neighbors_current, neighbor_future_mask
+    )
 
     norm_exp = args.observation_normalizer(exp)
 
@@ -101,7 +115,7 @@ def _grpo_step(raw_inputs, model, optimizer, args, ema, collider_injector):
 
     # Collision-based reward -> group-relative advantages.
     reward, nc_penalty, rb_penalty = compute_collision_reward(
-        ego_world, norm_exp, neighbors_future, neighbors_future_valid, args
+        ego_world, norm_exp, neighbors_future_ego, neighbors_future_valid, args
     )
     advantages = compute_group_advantages(reward, num_scenes, n, args.advantage_eps)
 

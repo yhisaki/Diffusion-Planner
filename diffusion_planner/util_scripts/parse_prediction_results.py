@@ -34,7 +34,6 @@ def calc_loss(inputs, prediction) -> tuple:
         ],
         axis=-1,
     )  # (P32, T, 4)
-    neighbors_future[neighbor_future_mask] = 0.0
 
     P32, T, _ = neighbors_future.shape
     ego_current, neighbors_current = (
@@ -44,6 +43,24 @@ def calc_loss(inputs, prediction) -> tuple:
     ego_current_original = inputs["ego_current_state"][:3]  # 元の角度情報を保持
     neighbors_current_original = inputs["neighbor_agents_past"][:P32, -1, :3]  # 元の角度情報を保持
     # inputs = args.observation_normalizer(inputs)
+
+    rel = neighbors_future[..., :2] - neighbors_current[:, None, :2]
+    cur_cos = neighbors_current[:, None, 2]
+    cur_sin = neighbors_current[:, None, 3]
+    neighbors_future_xy = np.empty_like(rel)
+    neighbors_future_xy[..., 0] = rel[..., 0] * cur_cos + rel[..., 1] * cur_sin
+    neighbors_future_xy[..., 1] = -rel[..., 0] * cur_sin + rel[..., 1] * cur_cos
+    fut_cos = neighbors_future[..., 2]
+    fut_sin = neighbors_future[..., 3]
+    neighbors_future[..., 0:2] = neighbors_future_xy
+    neighbors_future[..., 2] = fut_cos * cur_cos + fut_sin * cur_sin
+    neighbors_future[..., 3] = fut_sin * cur_cos - fut_cos * cur_sin
+    neighbors_future[neighbor_future_mask] = 0.0
+
+    neighbors_future_original[..., :2] = neighbors_future[..., :2]
+    neighbors_future_original[..., 2] = np.arctan2(
+        neighbors_future[..., 3], neighbors_future[..., 2]
+    )
 
     neighbor_current_mask = np.sum((neighbors_current[..., :4] != 0), axis=-1) == 0  # (P32)
     neighbor_mask = np.concatenate(

@@ -25,6 +25,7 @@ from diffusion_planner.model.flow_matching_utils.ode_solver import (
 )
 from diffusion_planner.model.module.dit import DiT
 from diffusion_planner.utils.normalizer import ObservationNormalizer, StateNormalizer
+from diffusion_planner.utils.trajectory_transform import make_agent_centric_current_states
 
 
 def generate_prefix_mask(delay: torch.Tensor, num_agents: int, max_len: int) -> torch.Tensor:
@@ -85,6 +86,13 @@ def compute_training_loss(
         [ego_future[:, None, :, :], neighbors_future[..., :]], dim=1
     )  # [B, P, T, 4]
     current_states = torch.cat([ego_current[:, None], neighbors_current], dim=1)  # [B, P, 4]
+    output_current_states = current_states.clone()
+    if Pn > 0:
+        canonical = torch.zeros_like(output_current_states[:, 1:])
+        canonical[..., 2] = 1.0
+        canonical = norm.normalize_agent_slice(canonical, start=1)
+        canonical[neighbor_current_mask] = 0.0
+        output_current_states[:, 1:] = canonical
 
     eps = 1e-3
     t = torch.rand(B, device=gt_future.device) * (1 - eps) + eps  # [B,]
@@ -100,11 +108,13 @@ def compute_training_loss(
     t = torch.where(prefix_mask, curr_mask_time, t)
 
     if use_velocity:
-        full_traj = torch.cat([current_states[:, :, None, :], gt_future], dim=2)  # [B, P, T+1, 4]
+        full_traj = torch.cat(
+            [output_current_states[:, :, None, :], gt_future], dim=2
+        )  # [B, P, T+1, 4]
         gt_velocity = waypoints_to_velocity(full_traj)  # [B, P, T, 4]
-        all_gt = torch.cat([current_states[:, :, None, :], gt_velocity], dim=2)
+        all_gt = torch.cat([output_current_states[:, :, None, :], gt_velocity], dim=2)
     else:
-        all_gt = torch.cat([current_states[:, :, None, :], norm(gt_future)], dim=2)
+        all_gt = torch.cat([output_current_states[:, :, None, :], norm(gt_future)], dim=2)
     all_gt[:, 1:][neighbor_mask] = 0.0
 
     if model_type == "x_start":
@@ -205,7 +215,7 @@ def compute_training_loss(
     if need_ego_edge:
         ego_pred = model_output[:, 0]  # [B, T, 4]
         if use_velocity:
-            ego_current_raw = current_states[:, 0]  # [B, 4]
+            ego_current_raw = output_current_states[:, 0]  # [B, 4]
             ego_pred_world = velocity_to_waypoints(ego_pred)
             ego_pred_world[..., :2] = ego_pred_world[..., :2] + ego_current_raw[:, None, :2]
         else:
@@ -232,7 +242,7 @@ def compute_training_loss(
     if args.coeff_neighbor_collision_loss > 0 and model_type == "x_start":
         nc_loss = compute_neighbor_collision_penalty(
             ego_edge_points,
-            neighbors_future,
+            inputs.get("neighbor_agents_future_ego_frame", neighbors_future),
             neighbors_future_valid,
             denorm_inputs["neighbor_agents_past"],
             margin=args.neighbor_collision_margin,
@@ -331,6 +341,12 @@ class Decoder(nn.Module):
         inputs["neighbor_current_mask"] = neighbor_current_mask
 
         current_states = torch.cat([ego_current, neighbors_current], dim=1)  # [B, P, 4]
+        current_states = make_agent_centric_current_states(current_states, neighbor_current_mask)
+        if not self._use_velocity:
+            if current_states.shape[1] > 1:
+                current_states[:, 1:] = self._state_normalizer.normalize_agent_slice(
+                    current_states[:, 1:], start=1
+                )
 
         return current_states, neighbor_current_mask, ego_current, neighbors_current
 

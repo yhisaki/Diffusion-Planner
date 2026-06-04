@@ -180,13 +180,26 @@ if __name__ == "__main__":
 
         # Neighbors
         neighbors = valid_data_dict["neighbor_agents_past"][0]
+        neighbor_prediction_for_plot = prediction.copy()
+        raw_neighbors = valid_data["neighbor_agents_past"][: prediction.shape[0] - 1, -1, :4]
+        if prediction.shape[0] > 1:
+            local_xy = prediction[1:, :, :2]
+            cur_xy = raw_neighbors[:, None, :2]
+            cur_cos = raw_neighbors[:, None, 2]
+            cur_sin = raw_neighbors[:, None, 3]
+            neighbor_prediction_for_plot[1:, :, 0] = (
+                local_xy[..., 0] * cur_cos - local_xy[..., 1] * cur_sin + cur_xy[..., 0]
+            )
+            neighbor_prediction_for_plot[1:, :, 1] = (
+                local_xy[..., 0] * cur_sin + local_xy[..., 1] * cur_cos + cur_xy[..., 1]
+            )
         for i in range(prediction.shape[0] - 1):
             neighbor = neighbors[i, -1]
             if np.sum(np.abs(neighbor[:4])).item() < 1e-6:
                 continue
             ax[0].plot(
-                prediction[i + 1, :, 0],
-                prediction[i + 1, :, 1],
+                neighbor_prediction_for_plot[i + 1, :, 0],
+                neighbor_prediction_for_plot[i + 1, :, 1],
                 color="teal",
                 alpha=0.5,
             )

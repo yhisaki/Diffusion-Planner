@@ -19,6 +19,10 @@ from diffusion_planner.utils import ddp
 from diffusion_planner.utils.config import Config
 from diffusion_planner.utils.dataset import DiffusionPlannerData
 from diffusion_planner.utils.lr_schedule import CosineAnnealingWarmUpRestarts
+from diffusion_planner.utils.trajectory_transform import (
+    make_agent_centric_current_states,
+    transform_future_to_agent_frame,
+)
 from diffusion_planner.utils.train_utils import resume_model, set_seed
 from timm.utils import ModelEma
 from torch import optim
@@ -70,13 +74,18 @@ def validate_model(model, val_loader, args, return_pred=False) -> tuple[float, f
             torch.sum(torch.ne(neighbors_future[..., :3], 0), dim=-1) == 0
         )  # (B, Pn, T)
         neighbors_future = heading_to_cos_sin(neighbors_future)  # (B, Pn, T, 4)
-        neighbors_future[neighbor_future_mask] = 0.0
+        neighbors_future_ego_frame = neighbors_future.clone()
+        neighbors_future_ego_frame[neighbor_future_mask] = 0.0
 
         B, Pn, T, _ = neighbors_future.shape
         ego_current, neighbors_current = (
             inputs["ego_current_state"][:, :4],
             inputs["neighbor_agents_past"][:, :Pn, -1, :4],
         )
+        neighbors_future = transform_future_to_agent_frame(
+            neighbors_future, neighbors_current, invalid_mask=neighbor_future_mask
+        )
+        neighbors_future[neighbor_future_mask] = 0.0
         inputs = args.observation_normalizer(inputs)
 
         _, outputs = model(inputs)
@@ -92,6 +101,7 @@ def validate_model(model, val_loader, args, return_pred=False) -> tuple[float, f
             [ego_future[:, None, :, :], neighbors_future[..., :]], dim=1
         )  # (B, Pn + 1, T, 4)
         current_states = torch.cat([ego_current[:, None], neighbors_current], dim=1)
+        current_states = make_agent_centric_current_states(current_states, neighbor_current_mask)
         # (B, Pn + 1, 4)
 
         all_gt = torch.cat(
@@ -142,7 +152,7 @@ def validate_model(model, val_loader, args, return_pred=False) -> tuple[float, f
         denorm_inputs = args.observation_normalizer.inverse(inputs)
         neighbor_penalty = compute_neighbor_collision_penalty(
             ego_edge_points,
-            neighbors_future,
+            neighbors_future_ego_frame,
             neighbors_future_valid,
             denorm_inputs["neighbor_agents_past"],
             margin=args.neighbor_collision_margin,

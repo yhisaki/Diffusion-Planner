@@ -33,6 +33,7 @@ from diffusion_planner.loss import (
     compute_road_border_penalty,
     loss_func,
 )
+from diffusion_planner.utils.trajectory_transform import make_agent_centric_current_states
 from diffusion_planner.model.diffusion_utils.sde import VPSDE_linear
 from diffusion_planner.model.module.decoder import generate_prefix_mask
 
@@ -213,6 +214,9 @@ def compute_grpo_loss(
     # ego row uses the generated (pseudo-GT) trajectory; neighbor rows keep their GT futures.
     gt_future = torch.cat([ego_target[:, None, :, :], neighbors_future], dim=1)  # [B, P, T, 4]
     current_states = torch.cat([ego_current[:, None], neighbors_current], dim=1)  # [B, P, 4]
+    current_states = make_agent_centric_current_states(current_states, neighbor_current_mask)
+    if current_states.shape[1] > 1:
+        current_states[:, 1:] = norm.normalize_agent_slice(current_states[:, 1:], start=1)
 
     eps = 1e-3
     t = torch.rand(B, device=device) * (1 - eps) + eps
