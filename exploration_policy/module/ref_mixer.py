@@ -6,7 +6,7 @@ alternating token-mixing and channel-mixing MLPs with pre-norm residuals.
 
 import torch
 import torch.nn as nn
-from timm.models.layers import Mlp
+from timm.layers import Mlp
 
 
 class _MixerBlock(nn.Module):

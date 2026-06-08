@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from timm.layers import DropPath
-from timm.models.layers import Mlp
+from timm.layers import Mlp
 
 from diffusion_planner.dimensions import *
 from diffusion_planner.model.module.mixer import MixerBlock
