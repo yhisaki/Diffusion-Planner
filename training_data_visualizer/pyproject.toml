@@ -1,0 +1,21 @@
+[project]
+name = "training_data_visualizer"
+version = "0.1.0"
+description = "Interactive visualization of training data NPZ files using Plotly and Gradio"
+requires-python = ">=3.13"
+dependencies = [
+    "gradio>=6.14.0",
+    "numpy>=2.4.4",
+    "plotly>=6.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["training_data_visualizer"]
+package-dir = { "training_data_visualizer" = "." }
+
+[project.scripts]
+training_data_visualizer = "training_data_visualizer.app:main"
