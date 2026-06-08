@@ -12,6 +12,7 @@ dependencies = [
     "scenario-generation",
     "scene-search",
     "training-data-visualizer",
+    "training-result-visualizer",
 ]
 
 [dependency-groups]
@@ -32,6 +33,7 @@ members = [
     "scene_search",
     "guidance_gui",
     "training_data_visualizer",
+    "training_result_visualizer",
 ]
 
 [tool.uv.sources]
@@ -43,6 +45,7 @@ scenario-generation = { workspace = true }
 scene-search = { workspace = true }
 guidance-gui = { workspace = true }
 training-data-visualizer = { workspace = true }
+training-result-visualizer = { workspace = true }
 
 [tool.pytest.ini_options]
 markers = [
