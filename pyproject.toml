@@ -14,7 +14,12 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pre-commit>=4.0.0", "pytest>=8.0.0", "ruff>=0.8.0"]
+dev = [
+    "debugpy>=1.8.21",
+    "pre-commit>=4.0.0",
+    "pytest>=8.0.0",
+    "ruff>=0.8.0",
+]
 
 [tool.uv.workspace]
 members = [
