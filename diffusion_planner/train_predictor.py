@@ -341,30 +341,6 @@ def model_training(args):
     data_list = []
     best_loss = float("inf")
 
-    if global_rank == 0:
-        valid_dict = validate_model(diffusion_planner, valid_loader, args)
-        valid_loss_ego = valid_dict["avg_loss_ego"]
-        valid_loss_neighbor = valid_dict["avg_loss_neighbor"]
-        mean_ego_loss_dict = mean_ego_loss(valid_dict)
-        valid_loss_ego_position_lat_loss = mean_ego_loss_dict.get(
-            "valid_loss/ego_position_lat_loss", 0.0
-        )
-        valid_loss_ego_position_lon_loss = mean_ego_loss_dict.get(
-            "valid_loss/ego_position_lon_loss", 0.0
-        )
-        turn_indicator_accuracy = valid_dict["turn_indicator_accuracy"]
-        turn_indicator_change_accuracy = valid_dict["turn_indicator_change_accuracy"]
-        turn_indicator_change_total = valid_dict["turn_indicator_change_total"]
-        print(
-            f"{valid_loss_ego=:.3f}\n"
-            f"{valid_loss_neighbor=:.3f}\n"
-            f"{valid_loss_ego_position_lat_loss=:.3f}\n"
-            f"{valid_loss_ego_position_lon_loss=:.3f}\n"
-            f"{turn_indicator_accuracy=:.3f}\n"
-            f"{turn_indicator_change_accuracy=:.3f}\n"
-            f"{turn_indicator_change_total=:.3f}"
-        )
-
     # begin training
     for epoch in range(init_epoch, train_epochs):
         # Synchronize all processes before training
@@ -386,90 +362,27 @@ def model_training(args):
 
         # training step
         train_loss, train_total_loss = train_epoch(
-            train_loader, diffusion_planner, optimizer, args, model_ema, aug
+            train_loader,
+            diffusion_planner,
+            optimizer,
+            args,
+            model_ema,
+            aug,
+            epoch=epoch,
+            save_path=save_path,
+            scheduler=scheduler,
         )
 
         if global_rank == 0:
-            valid_dict = validate_model(diffusion_planner, valid_loader, args)
-            valid_loss_ego = valid_dict["avg_loss_ego"]
-            valid_loss_neighbor = valid_dict["avg_loss_neighbor"]
-            mean_ego_loss_dict = mean_ego_loss(valid_dict)
-            valid_loss_ego_position_lat_loss = mean_ego_loss_dict.get(
-                "valid_loss/ego_position_lat_loss", 0.0
-            )
-            valid_loss_ego_position_lon_loss = mean_ego_loss_dict.get(
-                "valid_loss/ego_position_lon_loss", 0.0
-            )
-            turn_indicator_accuracy = valid_dict["turn_indicator_accuracy"]
-            turn_indicator_change_accuracy = valid_dict["turn_indicator_change_accuracy"]
-            turn_indicator_change_total = valid_dict["turn_indicator_change_total"]
-            print(
-                f"Epoch {epoch + 1}/{train_epochs}\n"
-                f"{valid_loss_ego=:.3f}\n"
-                f"{valid_loss_neighbor=:.3f}\n"
-                f"{valid_loss_ego_position_lat_loss=:.3f}\n"
-                f"{valid_loss_ego_position_lon_loss=:.3f}\n"
-                f"{turn_indicator_accuracy=:.3f}\n"
-                f"{turn_indicator_change_accuracy=:.3f}\n"
-                f"{turn_indicator_change_total=:.3f}"
-            )
-
-            lr_dict = {"lr": optimizer.param_groups[0]["lr"]}
-            wandb.log(
-                {
-                    **{f"train_loss/{k}": v for k, v in train_loss.items()},
-                    **{f"lr/{k}": v for k, v in lr_dict.items()},
-                    "valid_loss/ego": valid_loss_ego,
-                    "valid_loss/neighbors": valid_loss_neighbor,
-                    "valid_loss/turn_indicator_accuracy": turn_indicator_accuracy,
-                    "valid_loss/turn_indicator_change_accuracy": turn_indicator_change_accuracy,
-                    **mean_ego_loss_dict,
-                },
-                step=epoch + 1,
-            )
-
-            curr_data = {
-                "epoch": epoch + 1,
-                "train_loss": train_total_loss,
-                "valid_loss_ego": valid_loss_ego,
-                "valid_loss_neighbor": valid_loss_neighbor,
-                "valid_loss_ego_position_lat_loss": valid_loss_ego_position_lat_loss,
-                "valid_loss_ego_position_lon_loss": valid_loss_ego_position_lon_loss,
-            }
-            data_list.append(curr_data)
-            df = pd.DataFrame(data_list)
-            df.to_csv(os.path.join(save_path, "train_log.tsv"), index=False, sep="\t")
-
             model_dict = {
                 "epoch": epoch + 1,
                 "model": diffusion_planner.state_dict(),
                 "ema_state_dict": model_ema.ema.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "schedule": scheduler.state_dict(),
-                "loss": valid_loss_ego,
                 "wandb_id": wandb_id,
             }
-            torch.save(model_dict, f"{save_path}/latest.pth")
-
-            if (epoch + 1 - init_epoch) % save_utd == 0:
-                curr_dir = os.path.join(save_path, f"epoch{epoch + 1:04d}")
-                os.makedirs(curr_dir, exist_ok=True)
-                torch.save(model_dict, f"{curr_dir}/best_model.pth")
-                with open(os.path.join(curr_dir, "best_model_info.json"), "w") as f:
-                    json.dump(curr_data, f, indent=4)
-                with open(os.path.join(curr_dir, "args.json"), "w", encoding="utf-8") as f:
-                    json.dump(args_dict, f, indent=4)
-
-            if valid_loss_ego_position_lat_loss < best_loss:
-                curr_dir = os.path.join(save_path, "best_model")
-                os.makedirs(curr_dir, exist_ok=True)
-                torch.save(model_dict, f"{curr_dir}/best_model.pth")
-                best_loss = valid_loss_ego_position_lat_loss
-                curr_data["best_loss"] = best_loss
-                with open(os.path.join(curr_dir, "best_model_info.json"), "w") as f:
-                    json.dump(curr_data, f, indent=4)
-                with open(os.path.join(curr_dir, "args.json"), "w", encoding="utf-8") as f:
-                    json.dump(args_dict, f, indent=4)
+            torch.save(model_dict, f"{save_path}/model_epoch_{epoch + 1}.pth")
 
         scheduler.step()
         train_sampler.set_epoch(epoch + 1)

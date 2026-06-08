@@ -26,7 +26,18 @@ def heading_to_cos_sin(x):
     )
 
 
-def train_epoch(data_loader, model, optimizer, args, ema, aug: StatePerturbation = None):
+def train_epoch(
+    data_loader,
+    model,
+    optimizer,
+    args,
+    ema,
+    aug: StatePerturbation = None,
+    log_interval: int = 100,
+    epoch=0,
+    save_path=None,
+    scheduler=None,
+):
     epoch_loss = []
 
     model.train()
@@ -37,7 +48,7 @@ def train_epoch(data_loader, model, optimizer, args, ema, aug: StatePerturbation
     if ddp.get_rank() == 0:
         data_loader = tqdm(data_loader, desc="Training", unit="batch")
 
-    for inputs in data_loader:
+    for batch_idx, inputs in enumerate(data_loader):
         inputs = {key: value.to(args.device) for key, value in inputs.items()}
         inputs["ego_agent_past"] = heading_to_cos_sin(inputs["ego_agent_past"])
         inputs["goal_pose"] = heading_to_cos_sin(inputs["goal_pose"])
@@ -80,6 +91,26 @@ def train_epoch(data_loader, model, optimizer, args, ema, aug: StatePerturbation
         if args.ddp:
             torch.cuda.synchronize()
         epoch_loss.append(loss)
+
+        if ddp.get_rank() == 0 and (batch_idx + 1) % log_interval == 0:
+            recent_losses = epoch_loss[-log_interval:]
+            avg_loss = sum(l["loss"].item() for l in recent_losses) / len(recent_losses)
+            lr = optimizer.param_groups[0]["lr"]
+            print(
+                f"  Batch {batch_idx + 1}/{len(data_loader)} | Loss: {avg_loss:.4f} | LR: {lr:.6f}"
+            )
+
+            if save_path:
+                model_dict = {
+                    "epoch": epoch + 1,
+                    "model": ddp.get_model(model, args.ddp).state_dict(),
+                    "ema_state_dict": ema.ema.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "schedule": scheduler.state_dict() if scheduler is not None else None,
+                    "loss": loss["loss"].item(),
+                    "wandb_id": getattr(args, "wandb_id", None),
+                }
+                torch.save(model_dict, f"{save_path}/latest.pth")
 
     epoch_mean_loss = get_epoch_mean_loss(epoch_loss)
 
