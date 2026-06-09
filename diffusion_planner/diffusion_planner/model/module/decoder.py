@@ -355,7 +355,9 @@ class Decoder(nn.Module):
         turn_indicator_input = torch.cat([ego_trajectory, encoding_pooled], dim=-1)
         return self.turn_indicator_predictor(turn_indicator_input)
 
-    def _forward_training(self, encoding, inputs, neighbor_current_mask, encoding_pooled):
+    def _forward_training(
+        self, encoding, inputs, neighbor_current_mask, encoding_pooled, ego_velocity
+    ):
         """Forward pass for training mode.
 
         Args:
@@ -385,12 +387,20 @@ class Decoder(nn.Module):
                 diffusion_time,
                 encoding,
                 neighbor_current_mask,
+                ego_velocity,
             ).reshape(B, P, -1, 4),
             "turn_indicator_logit": turn_indicator_logit,
         }
 
     def _inference_flow_matching(
-        self, encoding, inputs, current_states, neighbor_current_mask, encoding_pooled, sampled_trajectories
+        self,
+        encoding,
+        inputs,
+        current_states,
+        neighbor_current_mask,
+        encoding_pooled,
+        sampled_trajectories,
+        ego_velocity,
     ):
         """Inference using Flow Matching approach.
 
@@ -413,6 +423,7 @@ class Decoder(nn.Module):
             self.dit,
             cross_c=encoding,
             neighbor_current_mask=neighbor_current_mask,
+            ego_velocity=ego_velocity,
         )
         x = euler_integration(func, x, NUM_STEP)
         # x = heun_integration(func, x, NUM_STEP)
@@ -436,6 +447,7 @@ class Decoder(nn.Module):
         neighbor_current_mask,
         encoding_pooled,
         sampled_trajectories,
+        ego_velocity,
     ):
         """Inference using X-Start (DPM Solver) approach.
 
@@ -474,6 +486,7 @@ class Decoder(nn.Module):
                 "model_condition": {
                     "cross_c": encoding,
                     "neighbor_current_mask": neighbor_current_mask,
+                    "ego_velocity": ego_velocity,
                 },
                 "inputs": inputs,
                 "observation_normalizer": self._observation_normalizer,
@@ -492,6 +505,7 @@ class Decoder(nn.Module):
             model_kwargs={
                 "cross_c": encoding,
                 "neighbor_current_mask": neighbor_current_mask,
+                "ego_velocity": ego_velocity,
             },
             **model_wrapper_params,
         )
@@ -513,7 +527,7 @@ class Decoder(nn.Module):
         return {"prediction": x0, "turn_indicator_logit": turn_indicator_logit}
 
     def _forward_inference(
-        self, encoding, inputs, current_states, neighbor_current_mask, encoding_pooled
+        self, encoding, inputs, current_states, neighbor_current_mask, encoding_pooled, ego_velocity
     ):
         """Forward pass for inference mode.
 
@@ -536,7 +550,13 @@ class Decoder(nn.Module):
 
         if self._model_type == "flow_matching":
             return self._inference_flow_matching(
-                encoding, inputs, current_states, neighbor_current_mask, encoding_pooled, sampled_trajectories
+                encoding,
+                inputs,
+                current_states,
+                neighbor_current_mask,
+                encoding_pooled,
+                sampled_trajectories,
+                ego_velocity,
             )
         elif self._model_type == "x_start":
             return self._inference_x_start(
@@ -546,6 +566,7 @@ class Decoder(nn.Module):
                 neighbor_current_mask,
                 encoding_pooled,
                 sampled_trajectories,
+                ego_velocity,
             )
         else:
             raise NotImplementedError(f"Unknown model type {self._model_type}")
@@ -583,6 +604,7 @@ class Decoder(nn.Module):
         current_states, neighbor_current_mask, ego_current, neighbors_current = (
             self._prepare_current_states(inputs)
         )
+        ego_velocity = inputs["ego_current_state"][:, 4:6]
 
         B, P, _ = current_states.shape
         assert P == (1 + self._predicted_neighbor_num)
@@ -592,8 +614,15 @@ class Decoder(nn.Module):
 
         # Dispatch to training or inference
         if self.training:
-            return self._forward_training(encoding, inputs, neighbor_current_mask, encoding_pooled)
+            return self._forward_training(
+                encoding, inputs, neighbor_current_mask, encoding_pooled, ego_velocity
+            )
         else:
             return self._forward_inference(
-                encoding, inputs, current_states, neighbor_current_mask, encoding_pooled
+                encoding,
+                inputs,
+                current_states,
+                neighbor_current_mask,
+                encoding_pooled,
+                ego_velocity,
             )

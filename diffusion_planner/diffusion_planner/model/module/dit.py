@@ -99,6 +99,7 @@ class DiT(nn.Module):
         T = 81
         D = 4
         self.agent_embedding = nn.Embedding(2, hidden_dim)
+        self.ego_velocity_proj = nn.Linear(2, hidden_dim)
         self.preproj = Mlp(
             in_features=T * D,
             hidden_features=512,
@@ -118,12 +119,13 @@ class DiT(nn.Module):
         )
         self.final_layer = FinalLayer(hidden_dim, output_dim)
 
-    def forward(self, x, t, cross_c, neighbor_current_mask):
+    def forward(self, x, t, cross_c, neighbor_current_mask, ego_velocity):
         """
         Forward pass of DiT.
         x: (B, P, T, D)   -> Embedded out of DiT
         t: (B, P, T, 1)
         cross_c: (B, N, D)      -> Cross-Attention context
+        ego_velocity: (B, 2) current ego velocity (vx, vy)
         """
         assert x.dim() == 4, f"{x.dim()=}"
         assert t.dim() == 4, f"{t.dim()=}"
@@ -144,7 +146,9 @@ class DiT(nn.Module):
             dim=0,
         )  # (P, hidden_dim)
         x_embedding = x_embedding[None, :, :].expand(B, -1, -1)  # (B, P, hidden_dim)
+        ego_velocity_embedding = self.ego_velocity_proj(ego_velocity)
         x = x + x_embedding
+        x[:, 0, :] = x[:, 0, :] + ego_velocity_embedding
 
         ego_mask = torch.zeros((B, 1), dtype=torch.bool, device=x.device)
         attn_mask = torch.cat([ego_mask, neighbor_current_mask], dim=1)
