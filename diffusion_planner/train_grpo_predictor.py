@@ -359,7 +359,7 @@ def model_training(args):
 
             model_dict = {
                 "epoch": epoch + 1,
-                "model": diffusion_planner.state_dict(),
+                "model": ddp.get_model(diffusion_planner, args.ddp).state_dict(),
                 "ema_state_dict": model_ema.ema.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "schedule": scheduler.state_dict(),
