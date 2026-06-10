@@ -159,6 +159,12 @@ def get_args():
     parser.add_argument("--predicted_neighbor_num", type=int, default=MAX_NUM_NEIGHBORS)
 
     parser.add_argument("--resume_model_path", type=str, help="path to resume model", default=None)
+    parser.add_argument(
+        "--freeze_encoder",
+        type=boolean,
+        default=False,
+        help="load only encoder from resume_model_path and freeze it; train decoder only",
+    )
 
     parser.add_argument("--use_wandb", default=False, type=boolean)
     parser.add_argument("--notes", default="", type=str)
@@ -297,26 +303,53 @@ def model_training(args):
         )
 
     # optimizer
-    params = [
-        {
-            "params": ddp.get_model(diffusion_planner, args.ddp).parameters(),
-            "lr": args.learning_rate,
-        }
-    ]
+    if args.freeze_encoder:
+        params = [
+            {
+                "params": ddp.get_model(diffusion_planner, args.ddp).decoder.parameters(),
+                "lr": args.learning_rate,
+            }
+        ]
+    else:
+        params = [
+            {
+                "params": ddp.get_model(diffusion_planner, args.ddp).parameters(),
+                "lr": args.learning_rate,
+            }
+        ]
 
     optimizer = optim.AdamW(params)
     scheduler = CosineAnnealingWarmUpRestarts(optimizer, train_epochs, args.warm_up_epoch)
 
     if args.resume_model_path is not None:
         print(f"Model loaded from {args.resume_model_path}")
-        diffusion_planner, optimizer, scheduler, init_epoch, wandb_id, model_ema = resume_model(
-            args.resume_model_path, diffusion_planner, optimizer, scheduler, model_ema, args.device
-        )
 
-        # Override learning rate with the new value
-        for param_group in optimizer.param_groups:
-            param_group["lr"] = args.learning_rate
-        print(f"Learning rate reset to {args.learning_rate}")
+        if args.freeze_encoder:
+            from diffusion_planner.utils.train_utils import resume_encoder_model
+
+            diffusion_planner = resume_encoder_model(
+                args.resume_model_path, diffusion_planner, args.device,
+                raw_model=ddp.get_model(diffusion_planner, args.ddp),
+            )
+            for p in ddp.get_model(diffusion_planner, args.ddp).encoder.parameters():
+                p.requires_grad_(False)
+            print("Encoder loaded and frozen. Training decoder only.")
+            init_epoch = 0
+            wandb_id = None
+        else:
+            diffusion_planner, optimizer, scheduler, init_epoch, wandb_id, model_ema = resume_model(
+                args.resume_model_path,
+                diffusion_planner,
+                optimizer,
+                scheduler,
+                model_ema,
+                args.device,
+            )
+
+            # Override learning rate with the new value
+            for param_group in optimizer.param_groups:
+                param_group["lr"] = args.learning_rate
+            print(f"Learning rate reset to {args.learning_rate}")
 
     else:
         init_epoch = 0

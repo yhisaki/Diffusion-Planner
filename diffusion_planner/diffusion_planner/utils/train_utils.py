@@ -88,3 +88,26 @@ def resume_model(path: str, model, optimizer, scheduler, ema, device):
         print("no ema shadow found")
 
     return model, optimizer, scheduler, init_epoch, wandb_id, ema
+
+
+def resume_encoder_model(path: str, model, device, raw_model=None):
+    ckpt = torch.load(path, map_location=device)
+
+    if "model" in ckpt:
+        state_dict = ckpt["model"]
+    elif "ema_state_dict" in ckpt:
+        state_dict = ckpt["ema_state_dict"]
+    else:
+        state_dict = ckpt
+
+    cleaned = {}
+    for k, v in state_dict.items():
+        k = k.replace("module.", "", 1) if k.startswith("module.") else k
+        if k.startswith("encoder."):
+            cleaned[k.replace("encoder.", "", 1)] = v
+
+    target = raw_model if raw_model is not None else model
+    target.encoder.load_state_dict(cleaned)
+    print(f"Encoder loaded from {path} ({len(cleaned)} keys)")
+
+    return model
