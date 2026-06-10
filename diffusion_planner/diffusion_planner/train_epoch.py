@@ -42,6 +42,8 @@ def train_epoch(
 
     model.train()
 
+    scaler = torch.amp.GradScaler('cuda', enabled=getattr(args, 'use_amp', False))
+
     if args.ddp:
         torch.cuda.synchronize()
 
@@ -70,21 +72,26 @@ def train_epoch(
         # call the model
         optimizer.zero_grad()
 
-        loss = compute_training_loss(model, inputs, (ego_future, neighbors_future, mask), args)
+        use_amp = getattr(args, 'use_amp', False)
+        with torch.amp.autocast('cuda', enabled=use_amp):
+            loss = compute_training_loss(model, inputs, (ego_future, neighbors_future, mask), args)
 
-        loss["loss"] = (
-            args.alpha_neighbor_loss * loss["neighbor_prediction_loss"]
-            + args.alpha_planning_loss * loss["ego_planning_loss"]
-            + loss["turn_indicator_loss"]
-            + args.coeff_road_border_loss * loss["road_border_loss"]
-            + args.coeff_neighbor_collision_loss * loss["neighbor_collision_loss"]
-        )
+            loss["loss"] = (
+                args.alpha_neighbor_loss * loss["neighbor_prediction_loss"]
+                + args.alpha_planning_loss * loss["ego_planning_loss"]
+                + loss["turn_indicator_loss"]
+                + args.coeff_road_border_loss * loss["road_border_loss"]
+                + args.coeff_neighbor_collision_loss * loss["neighbor_collision_loss"]
+            )
 
         # loss backward
-        loss["loss"].backward()
+        scaler.scale(loss["loss"]).backward()
 
+        scaler.unscale_(optimizer)
         nn.utils.clip_grad_norm_(model.parameters(), 5)
-        optimizer.step()
+
+        scaler.step(optimizer)
+        scaler.update()
 
         ema.update(model)
 

@@ -165,6 +165,18 @@ def get_args():
         default=False,
         help="load only encoder from resume_model_path and freeze it; train decoder only",
     )
+    parser.add_argument(
+        "--compile_model",
+        type=boolean,
+        default=False,
+        help="compile model with torch.compile() for faster forward pass",
+    )
+    parser.add_argument(
+        "--use_amp",
+        type=boolean,
+        default=False,
+        help="use automatic mixed precision for faster forward/backward pass",
+    )
 
     parser.add_argument("--use_wandb", default=False, type=boolean)
     parser.add_argument("--notes", default="", type=str)
@@ -284,6 +296,12 @@ def model_training(args):
     # set up model
     diffusion_planner = Diffusion_Planner(args)
     diffusion_planner = diffusion_planner.to(rank if args.device == "cuda" else args.device)
+
+    if args.compile_model:
+        torch.set_float32_matmul_precision('high')
+        print("Compiling model with torch.compile()...")
+        diffusion_planner = torch.compile(diffusion_planner)
+        print("Model compiled")
 
     if args.ddp:
         diffusion_planner = DDP(diffusion_planner, device_ids=[rank], find_unused_parameters=True)
