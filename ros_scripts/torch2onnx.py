@@ -64,6 +64,7 @@ DECODER_INPUT_NAMES = [
     "sampled_trajectories",
     "diffusion_time",
     "neighbor_agents_past",
+    "ego_current_state",
 ]
 
 TURN_INDICATOR_INPUT_NAMES = ["encoding", "final_x0"]
@@ -96,7 +97,7 @@ class ExportSpec:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("root_dir", type=Path)
+    parser.add_argument("path", type=Path, help="Path to a .pth file or a directory containing .pth files")
     parser.add_argument("--eval_npz", type=Path, default=None)
     parser.add_argument("--use_ema", action="store_true")
     parser.add_argument(
@@ -189,7 +190,9 @@ class DecoderONNXWrapper(nn.Module):
         sampled_trajectories: torch.Tensor,
         diffusion_time: torch.Tensor,
         neighbor_agents_past: torch.Tensor,
+        ego_current_state: torch.Tensor,
     ) -> torch.Tensor:
+        ego_velocity = ego_current_state[:, 4:6]
         neighbors_current = neighbor_agents_past[:, : self.decoder._predicted_neighbor_num, -1, :4]
         neighbor_current_mask = torch.sum(torch.ne(neighbors_current, 0), dim=-1) == 0
         batch_size = encoding.shape[0]
@@ -204,6 +207,7 @@ class DecoderONNXWrapper(nn.Module):
             diffusion_time,
             encoding,
             neighbor_current_mask,
+            ego_velocity,
         ).reshape(batch_size, agent_num, 1 + self.decoder._future_len, 4)
 
         return model_output
@@ -374,6 +378,7 @@ def build_decoder_inputs(inputs: TensorDict, encoding: torch.Tensor) -> TensorDi
         "sampled_trajectories": inputs["sampled_trajectories"],
         "diffusion_time": torch.ones(1, MAX_NUM_AGENTS, OUTPUT_T + 1, 1, dtype=torch.float32),
         "neighbor_agents_past": inputs["neighbor_agents_past"],
+        "ego_current_state": inputs["ego_current_state"],
     }
 
 
@@ -456,7 +461,9 @@ def build_export_specs(
     ]
 
 
-def build_dynamic_axes(input_names: list[str], output_names: list[str]) -> dict[str, dict[int, str]]:
+def build_dynamic_axes(
+    input_names: list[str], output_names: list[str]
+) -> dict[str, dict[int, str]]:
     return {name: {0: "batch"} for name in [*input_names, *output_names]}
 
 
@@ -602,6 +609,7 @@ def validate_split_models(
             decoder_inputs["sampled_trajectories"],
             decoder_inputs["diffusion_time"],
             decoder_inputs["neighbor_agents_past"],
+            decoder_inputs["ego_current_state"],
         )
         torch_turn_indicator = wrappers.turn_indicator(torch_encoding, torch_model_output)
 
@@ -614,6 +622,7 @@ def validate_split_models(
         "sampled_trajectories": decoder_inputs["sampled_trajectories"].cpu().numpy(),
         "diffusion_time": decoder_inputs["diffusion_time"].cpu().numpy(),
         "neighbor_agents_past": decoder_inputs["neighbor_agents_past"].cpu().numpy(),
+        "ego_current_state": decoder_inputs["ego_current_state"].cpu().numpy(),
     }
     onnx_model_output = run_ort_in_subprocess(decoder_onnx_path, decoder_onnx_inputs)[0]
     compare("model_output", torch_model_output.cpu().numpy(), onnx_model_output)
@@ -673,6 +682,7 @@ def convert_model(
             decoder_inputs["sampled_trajectories"],
             decoder_inputs["diffusion_time"],
             decoder_inputs["neighbor_agents_past"],
+            decoder_inputs["ego_current_state"],
         )
     turn_indicator_inputs = build_turn_indicator_inputs(encoding, final_x0)
 
@@ -718,17 +728,21 @@ def convert_model(
 
 if __name__ == "__main__":
     args = parse_args()
-    root_dir = Path(args.root_dir)
+    input_path = args.path
 
-    if not root_dir.exists():
-        print(f"Error: Directory '{root_dir}' does not exist")
-        exit(1)
-    if not root_dir.is_dir():
-        print(f"Error: '{root_dir}' is not a directory")
+    if not input_path.exists():
+        print(f"Error: '{input_path}' does not exist")
         exit(1)
 
-    pth_files = list(root_dir.rglob("*.pth"))
-    print(f"Found {len(pth_files)} .pth file(s) in '{root_dir}'")
+    if input_path.is_dir():
+        pth_files = list(input_path.rglob("*.pth"))
+        print(f"Found {len(pth_files)} .pth file(s) in '{input_path}'")
+    elif input_path.suffix == ".pth":
+        pth_files = [input_path]
+        print(f"Processing single .pth file: {input_path}")
+    else:
+        print(f"Error: '{input_path}' is not a directory or .pth file")
+        exit(1)
 
     skipped_count = 0
     for pth_file in pth_files:
@@ -740,7 +754,7 @@ if __name__ == "__main__":
         turn_indicator_onnx_file = pth_dir / f"{args.output_prefix}_turn_indicator.onnx"
 
         print(f"\n{'#' * 80}")
-        print(f"Processing: {pth_file.relative_to(root_dir)}")
+        print(f"Processing: {pth_file}")
 
         if not config_file.exists():
             print(f"Skipping: args.json not found in {pth_dir}")
