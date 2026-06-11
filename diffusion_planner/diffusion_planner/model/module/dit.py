@@ -98,7 +98,7 @@ class DiT(nn.Module):
 
         T = 81
         D = 4
-        self.agent_embedding = nn.Embedding(2, hidden_dim)
+        self.agent_embedding = nn.Embedding(4, hidden_dim)
         self.preproj = Mlp(
             in_features=T * D,
             hidden_features=512,
@@ -119,13 +119,24 @@ class DiT(nn.Module):
         )
         self.final_layer = FinalLayer(hidden_dim, output_dim)
 
-    def forward(self, x, t, cross_c, neighbor_current_mask, ego_current_state):
+    def forward(
+        self,
+        x,
+        t,
+        cross_c,
+        neighbor_current_mask,
+        ego_current_state,
+        agent_class,
+        current_states,
+    ):
         """
         Forward pass of DiT.
         x: (B, P, T, D)   -> Embedded out of DiT
         t: (B, P, T, 1)
         cross_c: (B, N, D)      -> Cross-Attention context
         ego_current_state: (B, 10) -> Ego current state [x, y, cos, sin, vx, vy, ax, ay, steering, yaw_rate]
+        agent_class: (B, P) class ids. 0=ego, 1=vehicle, 2=pedestrian, 3=bicycle
+        current_states: (B, P, 4) current states used as x0 offset for neighbors
         """
         assert x.dim() == 4, f"{x.dim()=}"
         assert t.dim() == 4, f"{t.dim()=}"
@@ -138,14 +149,7 @@ class DiT(nn.Module):
         x = self.preproj(x)  # (B, P, hidden_dim)
         t = self.t_embedder(t)  # (B, P, hidden_dim)
 
-        x_embedding = torch.cat(
-            [
-                self.agent_embedding.weight[0][None, :],
-                self.agent_embedding.weight[1][None, :].expand(P - 1, -1),
-            ],
-            dim=0,
-        )  # (P, hidden_dim)
-        x_embedding = x_embedding[None, :, :].expand(B, -1, -1)  # (B, P, hidden_dim)
+        x_embedding = self.agent_embedding(agent_class)  # (B, P, hidden_dim)
         x = x + x_embedding
 
         ego_vx_ax = ego_current_state[:, [4, 6]]
@@ -159,4 +163,9 @@ class DiT(nn.Module):
 
         x = self.final_layer(x, t) # (B, P, output_dim)
         x = x.reshape(B, P, T, D)
+        if P > 1 and T > 1:
+            neighbor_xy = x[:, 1:, 1:, :2] + current_states[:, 1:, None, :2]
+            neighbor_future = torch.cat([neighbor_xy, x[:, 1:, 1:, 2:]], dim=-1)
+            neighbors = torch.cat([x[:, 1:, :1], neighbor_future], dim=2)
+            x = torch.cat([x[:, :1], neighbors], dim=1)
         return x

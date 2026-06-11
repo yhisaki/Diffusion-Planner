@@ -181,18 +181,20 @@ class Decoder(nn.Module):
         nn.init.constant_(self.dit.final_layer.proj[-1].bias, 0)
 
     def _prepare_current_states(self, inputs):
-        """Extract and prepare current states for ego and neighbors.
+        """Extract current states and their derived masks/classes.
 
         Args:
             inputs: Dict containing ego_current_state and neighbor_agents_past
 
         Returns:
-            Tuple of (current_states, neighbor_current_mask, ego_current, neighbors_current)
+            Tuple of (current_states, neighbor_current_mask, ego_current, neighbors_current, agent_class)
                 - current_states: [B, P, 4] concatenated ego and neighbor current states
                 - neighbor_current_mask: [B, Pn] mask for invalid neighbors
                 - ego_current: [B, 1, 4] ego current state
                 - neighbors_current: [B, Pn, 4] neighbor current states
+                - agent_class: [B, P] DiT class ids; 0=ego, 1=vehicle, 2=pedestrian, 3=bicycle
         """
+        B = inputs["ego_current_state"].shape[0]
         ego_current = inputs["ego_current_state"][:, None, :4]
         neighbors_current = inputs["neighbor_agents_past"][
             :, : self._predicted_neighbor_num, -1, :4
@@ -202,7 +204,17 @@ class Decoder(nn.Module):
 
         current_states = torch.cat([ego_current, neighbors_current], dim=1)  # [B, P, 4]
 
-        return current_states, neighbor_current_mask, ego_current, neighbors_current
+        neighbor_type = inputs["neighbor_agents_past"][:, : self._predicted_neighbor_num, -1, 8:11]
+        neighbor_class = neighbor_type.argmax(dim=-1) + 1
+        neighbor_class = torch.where(
+            neighbor_current_mask,
+            torch.ones_like(neighbor_class),
+            neighbor_class,
+        )
+        ego_class = torch.zeros((B, 1), dtype=torch.long, device=neighbor_class.device)
+        agent_class = torch.cat([ego_class, neighbor_class.long()], dim=1)
+
+        return current_states, neighbor_current_mask, ego_current, neighbors_current, agent_class
 
     def _compute_turn_indicator(self, ego_trajectory, encoding_pooled):
         """Compute turn indicator logit from ego trajectory and encoding.
@@ -217,12 +229,15 @@ class Decoder(nn.Module):
         turn_indicator_input = torch.cat([ego_trajectory, encoding_pooled], dim=-1)
         return self.turn_indicator_predictor(turn_indicator_input)
 
-    def _forward_training(self, encoding, inputs, neighbor_current_mask, encoding_pooled):
+    def _forward_training(
+        self, encoding, inputs, current_states, agent_class, neighbor_current_mask, encoding_pooled
+    ):
         """Forward pass for training mode.
 
         Args:
             encoding: [B, N, D] encoded features
             inputs: Dict containing sampled_trajectories, gt_trajectories, diffusion_time, etc.
+            agent_class: [B, P] class ids for DiT
             neighbor_current_mask: [B, Pn] mask for invalid neighbors
             encoding_pooled: [B, D] pooled encoding
 
@@ -243,11 +258,13 @@ class Decoder(nn.Module):
 
         return {
             "model_output": self.dit(
-                sampled_trajectories,
-                diffusion_time,
-                encoding,
-                neighbor_current_mask,
+                x=sampled_trajectories,
+                t=diffusion_time,
+                cross_c=encoding,
+                neighbor_current_mask=neighbor_current_mask,
                 ego_current_state=inputs["ego_current_state"],
+                agent_class=agent_class,
+                current_states=current_states,
             ).reshape(B, P, -1, 4),
             "turn_indicator_logit": turn_indicator_logit,
         }
@@ -257,6 +274,7 @@ class Decoder(nn.Module):
         encoding,
         inputs,
         current_states,
+        agent_class,
         neighbor_current_mask,
         encoding_pooled,
         sampled_trajectories,
@@ -267,6 +285,7 @@ class Decoder(nn.Module):
             encoding: [B, N, D] encoded features
             inputs: Dict containing input data
             current_states: [B, P, 4] current states
+            agent_class: [B, P] class ids for DiT
             neighbor_current_mask: [B, Pn] mask for invalid neighbors
             encoding_pooled: [B, D] pooled encoding
             sampled_trajectories: [B, P, (1 + T) * 4] sampled trajectories
@@ -295,6 +314,8 @@ class Decoder(nn.Module):
                 "model_condition": {
                     "cross_c": encoding,
                     "neighbor_current_mask": neighbor_current_mask,
+                    "current_states": current_states,
+                    "agent_class": agent_class,
                     "ego_current_state": inputs["ego_current_state"],
                 },
                 "inputs": inputs,
@@ -308,20 +329,26 @@ class Decoder(nn.Module):
         noise_schedule = dpm.NoiseScheduleVP()
 
         model_fn = dpm.model_wrapper(
-            self.dit,
-            noise_schedule,
+            model=self.dit,
+            noise_schedule=noise_schedule,
             model_type="x_start",
             model_kwargs={
                 "cross_c": encoding,
                 "neighbor_current_mask": neighbor_current_mask,
+                "current_states": current_states,
+                "agent_class": agent_class,
                 "ego_current_state": inputs["ego_current_state"],
             },
             **model_wrapper_params,
         )
 
-        dpm_solver = dpm.DPM_Solver(model_fn, noise_schedule, correcting_xt_fn=prefix_constraint)
+        dpm_solver = dpm.DPM_Solver(
+            model_fn=model_fn,
+            noise_schedule=noise_schedule,
+            correcting_xt_fn=prefix_constraint,
+        )
 
-        x0 = dpm_solver.sample(xT, steps=10, skip_type="logSNR")
+        x0 = dpm_solver.sample(x=xT, steps=10, skip_type="logSNR")
 
         x0 = x0.reshape(B, P, (1 + self._future_len), 4)
         ego_trajectory = x0[:, 0, 1::10, :2].reshape(B, 2 * (self._future_len // 10))
@@ -331,7 +358,7 @@ class Decoder(nn.Module):
         return {"prediction": x0, "turn_indicator_logit": turn_indicator_logit}
 
     def _forward_inference(
-        self, encoding, inputs, current_states, neighbor_current_mask, encoding_pooled
+        self, encoding, inputs, current_states, agent_class, neighbor_current_mask, encoding_pooled
     ):
         """Forward pass for inference mode.
 
@@ -339,6 +366,7 @@ class Decoder(nn.Module):
             encoding: [B, N, D] encoded features
             inputs: Dict containing input data
             current_states: [B, P, 4] current states
+            agent_class: [B, P] class ids for DiT
             neighbor_current_mask: [B, Pn] mask for invalid neighbors
             encoding_pooled: [B, D] pooled encoding
 
@@ -353,12 +381,13 @@ class Decoder(nn.Module):
         )
 
         return self._inference_x_start(
-            encoding,
-            inputs,
-            current_states,
-            neighbor_current_mask,
-            encoding_pooled,
-            sampled_trajectories,
+            encoding=encoding,
+            inputs=inputs,
+            current_states=current_states,
+            agent_class=agent_class,
+            neighbor_current_mask=neighbor_current_mask,
+            encoding_pooled=encoding_pooled,
+            sampled_trajectories=sampled_trajectories,
         )
 
     def forward(self, encoding, inputs):
@@ -390,7 +419,7 @@ class Decoder(nn.Module):
 
         """
         # Common preprocessing
-        current_states, neighbor_current_mask, ego_current, neighbors_current = (
+        current_states, neighbor_current_mask, ego_current, neighbors_current, agent_class = (
             self._prepare_current_states(inputs)
         )
 
@@ -402,8 +431,20 @@ class Decoder(nn.Module):
 
         # Dispatch to training or inference
         if self.training:
-            return self._forward_training(encoding, inputs, neighbor_current_mask, encoding_pooled)
+            return self._forward_training(
+                encoding=encoding,
+                inputs=inputs,
+                current_states=current_states,
+                agent_class=agent_class,
+                neighbor_current_mask=neighbor_current_mask,
+                encoding_pooled=encoding_pooled,
+            )
         else:
             return self._forward_inference(
-                encoding, inputs, current_states, neighbor_current_mask, encoding_pooled
+                encoding=encoding,
+                inputs=inputs,
+                current_states=current_states,
+                agent_class=agent_class,
+                neighbor_current_mask=neighbor_current_mask,
+                encoding_pooled=encoding_pooled,
             )
