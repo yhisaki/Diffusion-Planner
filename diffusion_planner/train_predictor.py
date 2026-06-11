@@ -433,6 +433,14 @@ def model_training(args):
         )
 
         if global_rank == 0:
+            wandb.log(
+                {
+                    **{f"train/{key}": value for key, value in train_loss.items()},
+                    "lr": optimizer.param_groups[0]["lr"],
+                },
+                step=epoch + 1,
+            )
+
             model_dict = {
                 "epoch": epoch + 1,
                 "model": get_model_state_dict(diffusion_planner),
