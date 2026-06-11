@@ -19,7 +19,7 @@ from diffusion_planner.utils import ddp
 from diffusion_planner.utils.config import Config
 from diffusion_planner.utils.dataset import DiffusionPlannerData
 from diffusion_planner.utils.lr_schedule import CosineAnnealingWarmUpRestarts
-from diffusion_planner.utils.train_utils import resume_model, set_seed
+from diffusion_planner.utils.train_utils import get_model, resume_model, set_seed
 from timm.utils import ModelEma
 from torch import optim
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -306,14 +306,14 @@ if __name__ == "__main__":
     if global_rank == 0:
         print(
             "Model Params: {}".format(
-                sum(p.numel() for p in ddp.get_model(diffusion_planner, args.ddp).parameters())
+                sum(p.numel() for p in get_model(diffusion_planner).parameters())
             )
         )
 
     # optimizer
     params = [
         {
-            "params": ddp.get_model(diffusion_planner, args.ddp).parameters(),
+            "params": get_model(diffusion_planner).parameters(),
             "lr": 0.0,
         }
     ]

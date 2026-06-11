@@ -22,7 +22,7 @@ from diffusion_planner.utils.dataset import DiffusionPlannerData
 from diffusion_planner.utils.lr_schedule import CosineAnnealingWarmUpRestarts
 from diffusion_planner.utils.synthetic_neighbors import SyntheticColliderInjector
 from diffusion_planner.utils.normalizer import ObservationNormalizer, StateNormalizer
-from diffusion_planner.utils.train_utils import resume_model, set_seed
+from diffusion_planner.utils.train_utils import get_model, resume_model, set_seed
 from timm.utils import ModelEma
 from torch import optim
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -267,12 +267,12 @@ def model_training(args):
 
     if global_rank == 0:
         print("Model Params: {}".format(
-            sum(p.numel() for p in ddp.get_model(diffusion_planner, args.ddp).parameters())
+            sum(p.numel() for p in get_model(diffusion_planner).parameters())
         ))
 
     params = [
         {
-            "params": ddp.get_model(diffusion_planner, args.ddp).parameters(),
+            "params": get_model(diffusion_planner).parameters(),
             "lr": args.learning_rate,
         }
     ]
@@ -359,7 +359,7 @@ def model_training(args):
 
             model_dict = {
                 "epoch": epoch + 1,
-                "model": ddp.get_model(diffusion_planner, args.ddp).state_dict(),
+                "model": get_model(diffusion_planner).state_dict(),
                 "ema_state_dict": model_ema.ema.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "schedule": scheduler.state_dict(),

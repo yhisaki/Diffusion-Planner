@@ -1,11 +1,8 @@
 import argparse
 import json
 import os
-import sys
 
-import pandas as pd
 import torch
-import wandb
 from diffusion_planner.dimensions import *
 from diffusion_planner.model.diffusion_planner import Diffusion_Planner
 from diffusion_planner.train_epoch import train_epoch
@@ -17,12 +14,19 @@ from diffusion_planner.utils.data_augmentation_bridge import (
 from diffusion_planner.utils.dataset import DiffusionPlannerData
 from diffusion_planner.utils.lr_schedule import CosineAnnealingWarmUpRestarts
 from diffusion_planner.utils.normalizer import ObservationNormalizer, StateNormalizer
-from diffusion_planner.utils.train_utils import resume_model, set_seed
+from diffusion_planner.utils.train_utils import (
+    get_model,
+    get_model_state_dict,
+    resume_encoder_model,
+    resume_model,
+    set_seed,
+)
 from timm.utils import ModelEma
 from torch import optim
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
-from valid_predictor import validate_model
+
+import wandb
 
 
 def boolean(v):
@@ -44,7 +48,6 @@ def get_args():
 
     # Data
     parser.add_argument("--train_set_list", type=str, required=True)
-    parser.add_argument("--valid_set_list", type=str, required=True)
 
     parser.add_argument("--future_len", type=int, default=OUTPUT_T)
     parser.add_argument("--time_len", type=int, default=INPUT_T + 1)
@@ -77,8 +80,18 @@ def get_args():
     parser.add_argument(
         "--num_refine", type=int, default=20, help="number of refinement steps for augmentation"
     )
-    parser.add_argument("--ego_past_noise_std", type=float, default=0.1, help="std of noise applied to ego past trajectory during augmentation")
-    parser.add_argument("--use_smoothing_future_trajectory", default=True, type=boolean, help="whether to apply smoothing to future trajectory")
+    parser.add_argument(
+        "--ego_past_noise_std",
+        type=float,
+        default=0.1,
+        help="std of noise applied to ego past trajectory during augmentation",
+    )
+    parser.add_argument(
+        "--use_smoothing_future_trajectory",
+        default=True,
+        type=boolean,
+        help="whether to apply smoothing to future trajectory",
+    )
     parser.add_argument("--normalization_file_path", default="normalization.json", type=str)
     parser.add_argument("--num_workers", default=8, type=int)
     parser.add_argument("--pin-mem", action="store_true", help="Pin CPU memory in DataLoader")
@@ -89,7 +102,6 @@ def get_args():
     parser.add_argument("--seed", type=int, default=3407)
     parser.add_argument("--train_epochs", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=512)
-    parser.add_argument("--save_utd", type=int, default=10)
     parser.add_argument("--learning_rate", type=float, default=1e-4)
     parser.add_argument("--warm_up_epoch", type=int, default=5)
     parser.add_argument("--encoder_drop_path_rate", type=float, default=0.1)
@@ -158,12 +170,23 @@ def get_args():
     )
     parser.add_argument("--predicted_neighbor_num", type=int, default=MAX_NUM_NEIGHBORS)
 
-    parser.add_argument("--resume_model_path", type=str, help="path to resume model", default=None)
+    parser.add_argument(
+        "--resume_model_path",
+        type=str,
+        help="path to resume a full training checkpoint",
+        default=None,
+    )
+    parser.add_argument(
+        "--resume_encoder_model_path",
+        type=str,
+        help="path to load only encoder weights from a checkpoint",
+        default=None,
+    )
     parser.add_argument(
         "--freeze_encoder",
         type=boolean,
         default=False,
-        help="load only encoder from resume_model_path and freeze it; train decoder only",
+        help="freeze encoder parameters during training",
     )
     parser.add_argument(
         "--compile_model",
@@ -182,6 +205,12 @@ def get_args():
     parser.add_argument("--notes", default="", type=str)
 
     # distributed training parameters
+    parser.add_argument(
+        "--find_unused_parameters",
+        type=boolean,
+        default=True,
+        help="passed to DDP find_unused_parameters",
+    )
     parser.add_argument("--ddp", default=True, type=boolean, help="use ddp or not")
     parser.add_argument("--port", default="22323", type=str, help="port")
 
@@ -189,6 +218,9 @@ def get_args():
 
     args.state_normalizer = StateNormalizer.from_json(args)
     args.observation_normalizer = ObservationNormalizer.from_json(args)
+
+    if args.resume_model_path is not None and args.resume_encoder_model_path is not None:
+        raise ValueError("resume_model_path and resume_encoder_model_path cannot both be set")
 
     return args
 
@@ -239,7 +271,6 @@ def model_training(args):
     # training parameters
     train_epochs = args.train_epochs
     batch_size = args.batch_size
-    save_utd = args.save_utd
 
     # set up data loaders
     if args.use_data_augment:
@@ -258,7 +289,6 @@ def model_training(args):
 
     # prepare dataset
     train_set = DiffusionPlannerData(args.train_set_list)
-    valid_set = DiffusionPlannerData(args.valid_set_list)
 
     train_sampler = DistributedSampler(
         train_set, num_replicas=ddp.get_world_size(), rank=global_rank, shuffle=True
@@ -272,39 +302,43 @@ def model_training(args):
         drop_last=True,
     )
 
-    # Validation is only performed on rank 0 with full dataset
-    # Other ranks will get a dummy loader (not used)
-    if global_rank == 0:
-        valid_loader = DataLoader(
-            valid_set,
-            batch_size=batch_size // 4,
-            num_workers=args.num_workers,
-            pin_memory=args.pin_mem,
-            drop_last=False,
-            shuffle=False,
-        )
-    else:
-        # Dummy loader for non-main processes (won't be used)
-        valid_loader = None
-
     if global_rank == 0:
         print("Dataset Prepared: {} train data\n".format(len(train_set)))
 
     if args.ddp:
         torch.distributed.barrier()
 
-    # set up model
+    init_epoch = 0
+    wandb_id = None
+
+    # set up model and training state before wrapping with DDP
     diffusion_planner = Diffusion_Planner(args)
     diffusion_planner = diffusion_planner.to(rank if args.device == "cuda" else args.device)
 
-    if args.compile_model:
-        torch.set_float32_matmul_precision('high')
-        print("Compiling model with torch.compile()...")
-        diffusion_planner = torch.compile(diffusion_planner)
-        print("Model compiled")
+    if args.resume_encoder_model_path is not None:
+        diffusion_planner = resume_encoder_model(
+            args.resume_encoder_model_path,
+            diffusion_planner,
+            args.device,
+        )
+        print("Encoder loaded.")
 
-    if args.ddp:
-        diffusion_planner = DDP(diffusion_planner, device_ids=[rank], find_unused_parameters=True)
+        if args.freeze_encoder:
+            for parameter in diffusion_planner.encoder.parameters():
+                parameter.requires_grad_(False)
+            print("Encoder frozen. Training decoder and other non-encoder parameters.")
+
+    trainable_parameters = [p for p in diffusion_planner.parameters() if p.requires_grad]
+    if not trainable_parameters:
+        raise RuntimeError("No trainable parameters found")
+
+    optimizer = optim.AdamW([
+        {
+            "params": trainable_parameters,
+            "lr": args.learning_rate,
+        }
+    ])
+    scheduler = CosineAnnealingWarmUpRestarts(optimizer, train_epochs, args.warm_up_epoch)
 
     if args.use_ema:
         model_ema = ModelEma(
@@ -313,69 +347,45 @@ def model_training(args):
             device=args.device,
         )
 
+    if args.resume_model_path is not None:
+        print(f"Model loaded from {args.resume_model_path}")
+        diffusion_planner, optimizer, scheduler, init_epoch, wandb_id, model_ema = resume_model(
+            args.resume_model_path,
+            diffusion_planner,
+            optimizer,
+            scheduler,
+            model_ema,
+            args.device,
+        )
+
+        if args.freeze_encoder:
+            for parameter in diffusion_planner.encoder.parameters():
+                parameter.requires_grad_(False)
+            print("Encoder frozen. Training decoder and other non-encoder parameters.")
+
+    if args.compile_model:
+        torch.set_float32_matmul_precision("high")
+        print("Compiling model with torch.compile()...")
+        diffusion_planner = torch.compile(diffusion_planner)
+        print("Model compiled")
+
+    if args.ddp:
+        diffusion_planner = DDP(
+            diffusion_planner, device_ids=[rank], find_unused_parameters=args.find_unused_parameters
+        )
+
     if global_rank == 0:
         print(
             "Model Params: {}".format(
-                sum(p.numel() for p in ddp.get_model(diffusion_planner, args.ddp).parameters())
+                sum(p.numel() for p in get_model(diffusion_planner).parameters())
             )
         )
 
-    # optimizer
-    if args.freeze_encoder:
-        params = [
-            {
-                "params": ddp.get_model(diffusion_planner, args.ddp).decoder.parameters(),
-                "lr": args.learning_rate,
-            }
-        ]
-    else:
-        params = [
-            {
-                "params": ddp.get_model(diffusion_planner, args.ddp).parameters(),
-                "lr": args.learning_rate,
-            }
-        ]
-
-    optimizer = optim.AdamW(params)
-    scheduler = CosineAnnealingWarmUpRestarts(optimizer, train_epochs, args.warm_up_epoch)
-
-    if args.resume_model_path is not None:
-        print(f"Model loaded from {args.resume_model_path}")
-
-        if args.freeze_encoder:
-            from diffusion_planner.utils.train_utils import resume_encoder_model
-
-            diffusion_planner = resume_encoder_model(
-                args.resume_model_path, diffusion_planner, args.device,
-                raw_model=ddp.get_model(diffusion_planner, args.ddp),
-            )
-            for p in ddp.get_model(diffusion_planner, args.ddp).encoder.parameters():
-                p.requires_grad_(False)
-            print("Encoder loaded and frozen. Training decoder only.")
-            init_epoch = 0
-            wandb_id = None
-        else:
-            diffusion_planner, optimizer, scheduler, init_epoch, wandb_id, model_ema = resume_model(
-                args.resume_model_path,
-                diffusion_planner,
-                optimizer,
-                scheduler,
-                model_ema,
-                args.device,
-            )
-
-            # Override learning rate with the new value
-            for param_group in optimizer.param_groups:
-                param_group["lr"] = args.learning_rate
-            print(f"Learning rate reset to {args.learning_rate}")
-
-    else:
-        init_epoch = 0
-        wandb_id = None
-
     # logger
     if global_rank == 0:
-        os.environ["WANDB_MODE"] = "online" if args.use_wandb else "offline"
+        wandb_init_kwargs = {}
+        if not args.use_wandb:
+            wandb_init_kwargs["mode"] = "offline"
         wandb.init(
             project="Diffusion-Planner",
             name=args.exp_name,
@@ -383,14 +393,12 @@ def model_training(args):
             resume="allow",
             id=wandb_id,
             dir=f"{save_path}",
+            **wandb_init_kwargs,
         )
         wandb.config.update(args)
 
     if args.ddp:
         torch.distributed.barrier()
-
-    data_list = []
-    best_loss = float("inf")
 
     # begin training
     for epoch in range(init_epoch, train_epochs):
@@ -427,7 +435,7 @@ def model_training(args):
         if global_rank == 0:
             model_dict = {
                 "epoch": epoch + 1,
-                "model": ddp.get_model(diffusion_planner, args.ddp).state_dict(),
+                "model": get_model_state_dict(diffusion_planner),
                 "ema_state_dict": model_ema.ema.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "schedule": scheduler.state_dict(),
