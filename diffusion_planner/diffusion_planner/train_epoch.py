@@ -81,8 +81,6 @@ def train_epoch(
                 args.alpha_neighbor_loss * loss["neighbor_prediction_loss"]
                 + args.alpha_planning_loss * loss["ego_planning_loss"]
                 + loss["turn_indicator_loss"]
-                + args.coeff_road_border_loss * loss["road_border_loss"]
-                + args.coeff_neighbor_collision_loss * loss["neighbor_collision_loss"]
             )
 
         # loss backward
@@ -114,12 +112,6 @@ def train_epoch(
             avg_turn_indicator = sum(l["turn_indicator_loss"].item() for l in recent_losses) / len(
                 recent_losses
             )
-            avg_road_border = sum(l["road_border_loss"].item() for l in recent_losses) / len(
-                recent_losses
-            )
-            avg_neighbor_collision = sum(
-                l["neighbor_collision_loss"].item() for l in recent_losses
-            ) / len(recent_losses)
             lr = optimizer.param_groups[0]["lr"]
             print(
                 f"  Batch {batch_idx + 1}/{len(data_loader)} | "
@@ -127,8 +119,6 @@ def train_epoch(
                 f"Ego: {avg_ego_planning:.4f} | "
                 f"Neighbor: {avg_neighbor_pred:.4f} | "
                 f"Turn: {avg_turn_indicator:.4f} | "
-                f"Border: {avg_road_border:.4f} | "
-                f"Collision: {avg_neighbor_collision:.4f} | "
                 f"LR: {lr:.6f} | "
                 f"{log_interval} batches: {elapsed_sec:.2f}s"
             )

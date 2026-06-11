@@ -7,9 +7,6 @@ import numpy as np
 import torch
 from diffusion_planner.dimensions import MAX_NUM_AGENTS, MAX_NUM_NEIGHBORS, OUTPUT_T, POSE_DIM
 from diffusion_planner.loss import (
-    compute_ego_edge_points,
-    compute_neighbor_collision_penalty,
-    compute_road_border_penalty,
     loss_func,
     make_turn_indicator_gt,
 )
@@ -47,8 +44,6 @@ def validate_model(model, val_loader, args, return_pred=False) -> tuple[float, f
     turn_indicator_change_correct = 0.0
     turn_indicator_change_total = 0
 
-    delay = 0
-
     for inputs in tqdm(val_loader, desc="validate", disable=ddp.get_rank() != 0):
         inputs = {key: value.to(device) for key, value in inputs.items()}
         B = inputs["ego_current_state"].shape[0]
@@ -58,7 +53,6 @@ def validate_model(model, val_loader, args, return_pred=False) -> tuple[float, f
         inputs["sampled_trajectories"] = torch.zeros(
             B, MAX_NUM_AGENTS, OUTPUT_T + 1, POSE_DIM, dtype=torch.float32
         )
-        inputs["delay"] = torch.full((B,), delay, dtype=torch.float32, device=device)
 
         inputs["ego_agent_past"] = heading_to_cos_sin(inputs["ego_agent_past"])
         inputs["goal_pose"] = heading_to_cos_sin(inputs["goal_pose"])
@@ -133,29 +127,6 @@ def validate_model(model, val_loader, args, return_pred=False) -> tuple[float, f
         for key, val in loss_dict.items():
             # val : (B, Pn + 1, T)
             total_result_dict[f"ego_{key}"].append(val[:, 0, :].cpu())  # (B, T)
-
-        # Compute ego edge points for penalty metrics
-        ego_edge_points = compute_ego_edge_points(
-            prediction[:, 0], inputs["ego_shape"], n_interp=args.road_border_n_interp
-        )
-
-        denorm_inputs = args.observation_normalizer.inverse(inputs)
-        neighbor_penalty = compute_neighbor_collision_penalty(
-            ego_edge_points,
-            neighbors_future,
-            neighbors_future_valid,
-            denorm_inputs["neighbor_agents_past"],
-            margin=args.neighbor_collision_margin,
-        )
-        total_result_dict["ego_neighbor_margin_loss"].append(neighbor_penalty.cpu())
-
-        # Road border collision metric
-        rb_penalty = compute_road_border_penalty(
-            ego_edge_points,
-            denorm_inputs["line_strings"],
-            margin=args.road_border_margin,
-        )
-        total_result_dict["ego_road_border_loss"].append(rb_penalty.cpu())
 
     avg_loss_ego = total_loss_ego / total_samples_ego
     avg_loss_neighbor = total_loss_neighbor / max(total_samples_neighbor, 1)
@@ -360,14 +331,6 @@ if __name__ == "__main__":
         print(f"{turn_indicator_change_accuracy=:.4f} ({turn_indicator_change_total=:d})")
     else:
         print("turn_indicator_change_accuracy=0.0000 (num_samples=0)")
-    if "ego_neighbor_margin_loss" in valid_dict:
-        print(
-            "ego_neighbor_margin_loss_mean="
-            f"{valid_dict['ego_neighbor_margin_loss'].mean().item():.4f}"
-        )
-    if "ego_road_border_loss" in valid_dict:
-        print(f"ego_road_border_loss_mean={valid_dict['ego_road_border_loss'].mean().item():.4f}")
-
     valid_dict_to_save = {
         "avg_loss_ego": avg_loss_ego,
         "avg_loss_neighbor": avg_loss_neighbor,

@@ -38,7 +38,6 @@ python3 -m torch.distributed.run --nnodes 1 --nproc-per-node 8 --standalone trai
 --train_set_list $TRAIN_SET_LIST \
 --valid_set_list $VALID_SET_LIST \
 --use_wandb True \
---diffusion_model_type "x_start" \
 --save_dir ${SAVE_PATH} \
 --train_epochs 80 \
 --save_utd 10 \
@@ -50,7 +49,6 @@ python3 -m torch.distributed.run --nnodes 1 --nproc-per-node 8 --standalone trai
 --train_set_list $SFT_SET_LIST \
 --valid_set_list $VALID_SET_LIST \
 --use_wandb True \
---diffusion_model_type "x_start" \
 --save_dir ${SAVE_PATH} \
 --resume_model_path ${SAVE_PATH}/epoch0060/best_model.pth \
 --train_epochs 80 \

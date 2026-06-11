@@ -8,9 +8,6 @@ from diffusion_planner.model.diffusion_planner import Diffusion_Planner
 from diffusion_planner.train_epoch import train_epoch
 from diffusion_planner.utils import ddp
 from diffusion_planner.utils.data_augmentation import StatePerturbation
-from diffusion_planner.utils.data_augmentation_bridge import (
-    StatePerturbation as BridgeStatePerturbation,
-)
 from diffusion_planner.utils.dataset import DiffusionPlannerData
 from diffusion_planner.utils.lr_schedule import CosineAnnealingWarmUpRestarts
 from diffusion_planner.utils.normalizer import ObservationNormalizer, StateNormalizer
@@ -121,37 +118,9 @@ def get_args():
         help="Set for 4 sections [0,20), [20, 40), [40, 60), [60, 80)",
     )
 
-    parser.add_argument("--coeff_road_border_loss", type=float, default=1.0)
-    parser.add_argument("--road_border_margin", type=float, default=0.25)
-    parser.add_argument("--road_border_n_interp", type=int, default=2)
-
-    parser.add_argument("--coeff_neighbor_collision_loss", type=float, default=0.0)
-    parser.add_argument("--neighbor_collision_margin", type=float, default=2.0)
-
     parser.add_argument("--alpha_planning_loss", type=float, default=1.0)
     parser.add_argument("--alpha_neighbor_loss", type=float, default=0.1)
 
-    # Velocity representation & hybrid loss (HDP paper, Section IV-B)
-    parser.add_argument(
-        "--use_velocity_representation",
-        type=boolean,
-        default=False,
-        help="Output trajectory as per-frame displacement instead of absolute waypoints",
-    )
-    parser.add_argument(
-        "--hybrid_loss_omega",
-        type=float,
-        default=0.1,
-        help="Weight for waypoint loss term in hybrid loss (omega in the paper)",
-    )
-    parser.add_argument(
-        "--hybrid_loss_window",
-        type=int,
-        default=10,
-        help="Gradient detach window size W for the waypoint loss term",
-    )
-
-    parser.add_argument("--guidance_scale", type=float, default=0.5)
     parser.add_argument("--device", type=str, help="run on which device", default="cuda")
 
     parser.add_argument("--use_ema", default=True, type=boolean)
@@ -162,12 +131,6 @@ def get_args():
     parser.add_argument("--decoder_depth", type=int, help="number of decoding layers", default=3)
     parser.add_argument("--num_heads", type=int, help="number of multi-head", default=8)
     parser.add_argument("--hidden_dim", type=int, help="hidden dimension", default=256)
-    parser.add_argument(
-        "--diffusion_model_type",
-        type=str,
-        choices=["x_start", "flow_matching"],
-        default="x_start",
-    )
     parser.add_argument("--predicted_neighbor_num", type=int, default=MAX_NUM_NEIGHBORS)
 
     parser.add_argument(
@@ -274,16 +237,13 @@ def model_training(args):
 
     # set up data loaders
     if args.use_data_augment:
-        if args.augment_type == "bridge":
-            aug = BridgeStatePerturbation(augment_prob=args.augment_prob, device=args.device)
-        else:
-            aug = StatePerturbation(
-                augment_prob=args.augment_prob,
-                num_refine=args.num_refine,
-                device=args.device,
-                ego_past_noise_std=args.ego_past_noise_std,
-                use_smoothing_future_trajectory=args.use_smoothing_future_trajectory,
-            )
+        aug = StatePerturbation(
+            augment_prob=args.augment_prob,
+            num_refine=args.num_refine,
+            device=args.device,
+            ego_past_noise_std=args.ego_past_noise_std,
+            use_smoothing_future_trajectory=args.use_smoothing_future_trajectory,
+        )
     else:
         aug = None
 

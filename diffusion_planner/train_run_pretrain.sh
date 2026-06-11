@@ -44,7 +44,6 @@ fi
 --exp_name ${exp_name} \
 --train_set_list $TRAIN_SET_LIST \
 --use_wandb False \
---diffusion_model_type "x_start" \
 --save_dir ${SAVE_PATH} \
 --train_epochs 80 \
 --batch_size 480 \
