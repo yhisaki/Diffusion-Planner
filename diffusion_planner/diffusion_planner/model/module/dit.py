@@ -113,17 +113,19 @@ class DiT(nn.Module):
             act_layer=nn.GELU,
             drop=0.0,
         )
+        self.ego_state_proj = nn.Linear(2, hidden_dim)
         self.blocks = nn.ModuleList(
             [DiTBlock(hidden_dim, heads, dropout, mlp_ratio) for i in range(depth)]
         )
         self.final_layer = FinalLayer(hidden_dim, output_dim)
 
-    def forward(self, x, t, cross_c, neighbor_current_mask):
+    def forward(self, x, t, cross_c, neighbor_current_mask, ego_current_state):
         """
         Forward pass of DiT.
         x: (B, P, T, D)   -> Embedded out of DiT
         t: (B, P, T, 1)
         cross_c: (B, N, D)      -> Cross-Attention context
+        ego_current_state: (B, 10) -> Ego current state [x, y, cos, sin, vx, vy, ax, ay, steering, yaw_rate]
         """
         assert x.dim() == 4, f"{x.dim()=}"
         assert t.dim() == 4, f"{t.dim()=}"
@@ -145,6 +147,9 @@ class DiT(nn.Module):
         )  # (P, hidden_dim)
         x_embedding = x_embedding[None, :, :].expand(B, -1, -1)  # (B, P, hidden_dim)
         x = x + x_embedding
+
+        ego_vx_ax = ego_current_state[:, [4, 6]]
+        x[:, 0] = x[:, 0] + self.ego_state_proj(ego_vx_ax)
 
         ego_mask = torch.zeros((B, 1), dtype=torch.bool, device=x.device)
         attn_mask = torch.cat([ego_mask, neighbor_current_mask], dim=1)

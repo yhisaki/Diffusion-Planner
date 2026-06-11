@@ -385,6 +385,7 @@ class Decoder(nn.Module):
                 diffusion_time,
                 encoding,
                 neighbor_current_mask,
+                ego_current_state=inputs["ego_current_state"],
             ).reshape(B, P, -1, 4),
             "turn_indicator_logit": turn_indicator_logit,
         }
@@ -413,6 +414,7 @@ class Decoder(nn.Module):
             self.dit,
             cross_c=encoding,
             neighbor_current_mask=neighbor_current_mask,
+            ego_current_state=inputs["ego_current_state"],
         )
         x = euler_integration(func, x, NUM_STEP)
         # x = heun_integration(func, x, NUM_STEP)
@@ -474,6 +476,7 @@ class Decoder(nn.Module):
                 "model_condition": {
                     "cross_c": encoding,
                     "neighbor_current_mask": neighbor_current_mask,
+                    "ego_current_state": inputs["ego_current_state"],
                 },
                 "inputs": inputs,
                 "observation_normalizer": self._observation_normalizer,
@@ -492,6 +495,7 @@ class Decoder(nn.Module):
             model_kwargs={
                 "cross_c": encoding,
                 "neighbor_current_mask": neighbor_current_mask,
+                "ego_current_state": inputs["ego_current_state"],
             },
             **model_wrapper_params,
         )
