@@ -319,18 +319,20 @@ class Decoder(nn.Module):
         nn.init.constant_(self.dit.final_layer.proj[-1].bias, 0)
 
     def _prepare_current_states(self, inputs):
-        """Extract and prepare current states for ego and neighbors.
+        """Extract current states and their derived masks/classes.
 
         Args:
             inputs: Dict containing ego_current_state and neighbor_agents_past
 
         Returns:
-            Tuple of (current_states, neighbor_current_mask, ego_current, neighbors_current)
+            Tuple of (current_states, neighbor_current_mask, ego_current, neighbors_current, agent_class)
                 - current_states: [B, P, 4] concatenated ego and neighbor current states
                 - neighbor_current_mask: [B, Pn] mask for invalid neighbors
                 - ego_current: [B, 1, 4] ego current state
                 - neighbors_current: [B, Pn, 4] neighbor current states
+                - agent_class: [B, P] DiT class ids; 0=ego, 1=vehicle, 2=pedestrian, 3=bicycle
         """
+        B = inputs["ego_current_state"].shape[0]
         ego_current = inputs["ego_current_state"][:, None, :4]
         neighbors_current = inputs["neighbor_agents_past"][
             :, : self._predicted_neighbor_num, -1, :4
@@ -340,11 +342,6 @@ class Decoder(nn.Module):
 
         current_states = torch.cat([ego_current, neighbors_current], dim=1)  # [B, P, 4]
 
-        return current_states, neighbor_current_mask, ego_current, neighbors_current
-
-    def _build_agent_class(self, inputs, neighbor_current_mask):
-        """Build DiT agent class ids: 0=ego, 1=vehicle, 2=pedestrian, 3=bicycle."""
-        B = inputs["ego_current_state"].shape[0]
         neighbor_type = inputs["neighbor_agents_past"][:, : self._predicted_neighbor_num, -1, 8:11]
         neighbor_class = neighbor_type.argmax(dim=-1) + 1
         neighbor_class = torch.where(
@@ -353,7 +350,9 @@ class Decoder(nn.Module):
             neighbor_class,
         )
         ego_class = torch.zeros((B, 1), dtype=torch.long, device=neighbor_class.device)
-        return torch.cat([ego_class, neighbor_class.long()], dim=1)
+        agent_class = torch.cat([ego_class, neighbor_class.long()], dim=1)
+
+        return current_states, neighbor_current_mask, ego_current, neighbors_current, agent_class
 
     def _compute_turn_indicator(self, ego_trajectory, encoding_pooled):
         """Compute turn indicator logit from ego trajectory and encoding.
@@ -618,10 +617,9 @@ class Decoder(nn.Module):
 
         """
         # Common preprocessing
-        current_states, neighbor_current_mask, ego_current, neighbors_current = (
+        current_states, neighbor_current_mask, ego_current, neighbors_current, agent_class = (
             self._prepare_current_states(inputs)
         )
-        agent_class = self._build_agent_class(inputs, neighbor_current_mask)
 
         B, P, _ = current_states.shape
         assert P == (1 + self._predicted_neighbor_num)
