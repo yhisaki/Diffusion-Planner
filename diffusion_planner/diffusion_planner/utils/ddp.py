@@ -101,7 +101,10 @@ def reduce_and_average_losses(loss_dict, device):
     torch.distributed.barrier()
     world_size = dist.get_world_size()
     for key in loss_dict.keys():
-        loss_tensor = torch.tensor([loss_dict[key].item()]).to(device)
+        value = loss_dict[key]
+        if isinstance(value, torch.Tensor):
+            value = value.detach().item()
+        loss_tensor = torch.tensor([value], device=device, dtype=torch.float32)
         dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
         loss_dict[key] = loss_tensor.item() / world_size
     return loss_dict
