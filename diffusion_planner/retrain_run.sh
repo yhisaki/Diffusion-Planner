@@ -32,7 +32,6 @@ python3 -m torch.distributed.run --nnodes 1 --nproc-per-node 8 --standalone trai
 --train_epochs 80 \
 --save_utd 5 \
 --use_wandb True \
---diffusion_model_type "x_start" \
 --save_dir $MODEL_DIR \
 2>&1 | tee ${MODEL_DIR}/train_log.txt
 
