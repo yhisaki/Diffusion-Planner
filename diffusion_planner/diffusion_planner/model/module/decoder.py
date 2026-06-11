@@ -342,6 +342,19 @@ class Decoder(nn.Module):
 
         return current_states, neighbor_current_mask, ego_current, neighbors_current
 
+    def _build_agent_class(self, inputs, neighbor_current_mask):
+        """Build DiT agent class ids: 0=ego, 1=vehicle, 2=pedestrian, 3=bicycle."""
+        B = inputs["ego_current_state"].shape[0]
+        neighbor_type = inputs["neighbor_agents_past"][:, : self._predicted_neighbor_num, -1, 8:11]
+        neighbor_class = neighbor_type.argmax(dim=-1) + 1
+        neighbor_class = torch.where(
+            neighbor_current_mask,
+            torch.ones_like(neighbor_class),
+            neighbor_class,
+        )
+        ego_class = torch.zeros((B, 1), dtype=torch.long, device=neighbor_class.device)
+        return torch.cat([ego_class, neighbor_class.long()], dim=1)
+
     def _compute_turn_indicator(self, ego_trajectory, encoding_pooled):
         """Compute turn indicator logit from ego trajectory and encoding.
 
@@ -355,7 +368,9 @@ class Decoder(nn.Module):
         turn_indicator_input = torch.cat([ego_trajectory, encoding_pooled], dim=-1)
         return self.turn_indicator_predictor(turn_indicator_input)
 
-    def _forward_training(self, encoding, inputs, neighbor_current_mask, encoding_pooled):
+    def _forward_training(
+        self, encoding, inputs, current_states, neighbor_current_mask, encoding_pooled, agent_class
+    ):
         """Forward pass for training mode.
 
         Args:
@@ -385,12 +400,21 @@ class Decoder(nn.Module):
                 diffusion_time,
                 encoding,
                 neighbor_current_mask,
+                agent_class,
+                current_states,
             ).reshape(B, P, -1, 4),
             "turn_indicator_logit": turn_indicator_logit,
         }
 
     def _inference_flow_matching(
-        self, encoding, inputs, current_states, neighbor_current_mask, encoding_pooled, sampled_trajectories
+        self,
+        encoding,
+        inputs,
+        current_states,
+        neighbor_current_mask,
+        encoding_pooled,
+        sampled_trajectories,
+        agent_class,
     ):
         """Inference using Flow Matching approach.
 
@@ -400,6 +424,7 @@ class Decoder(nn.Module):
             neighbor_current_mask: [B, Pn] mask for invalid neighbors
             encoding_pooled: [B, D] pooled encoding
             sampled_trajectories: [B, P, (1 + T) * 4] sampled trajectories
+            agent_class: [B, P] agent class ids
 
         Returns:
             Dict containing prediction and turn_indicator_logit
@@ -413,6 +438,7 @@ class Decoder(nn.Module):
             self.dit,
             cross_c=encoding,
             neighbor_current_mask=neighbor_current_mask,
+            agent_class=agent_class,
         )
         x = euler_integration(func, x, NUM_STEP)
         # x = heun_integration(func, x, NUM_STEP)
@@ -436,6 +462,7 @@ class Decoder(nn.Module):
         neighbor_current_mask,
         encoding_pooled,
         sampled_trajectories,
+        agent_class,
     ):
         """Inference using X-Start (DPM Solver) approach.
 
@@ -453,9 +480,9 @@ class Decoder(nn.Module):
         B = encoding.shape[0]
         P = 1 + self._predicted_neighbor_num
 
-        action_prefix = sampled_trajectories.reshape(B, P, 1 + self._future_len, 4)
-        action_prefix = replace_current_state(action_prefix, current_states)
-        xT = action_prefix.reshape(B, P, (1 + self._future_len) * 4)
+        xT = sampled_trajectories
+        action_prefix = sampled_trajectories.reshape(B, P, -1, 4)
+        action_prefix[:, :, 0, :] = current_states
 
         B, P, T_plus_1, D = action_prefix.shape
 
@@ -463,9 +490,9 @@ class Decoder(nn.Module):
         mask = generate_prefix_mask(delay, P, T_plus_1)  # (B, P, T_plus_1, 1)
 
         def prefix_constraint(xt, t, step):
-            xt = xt.reshape(B, P, 1 + self._future_len, 4)
-            xt = replace_current_state(xt, current_states)
-            return xt
+            xt = xt.reshape(B, P, -1, 4)
+            xt[:, :, 0, :] = current_states
+            return xt.reshape(B, P, -1)
 
         model_wrapper_params = {
             "classifier_fn": self._guidance_fn,
@@ -474,6 +501,8 @@ class Decoder(nn.Module):
                 "model_condition": {
                     "cross_c": encoding,
                     "neighbor_current_mask": neighbor_current_mask,
+                    "agent_class": agent_class,
+                    "current_states": current_states,
                 },
                 "inputs": inputs,
                 "observation_normalizer": self._observation_normalizer,
@@ -492,6 +521,8 @@ class Decoder(nn.Module):
             model_kwargs={
                 "cross_c": encoding,
                 "neighbor_current_mask": neighbor_current_mask,
+                "agent_class": agent_class,
+                "current_states": current_states,
             },
             **model_wrapper_params,
         )
@@ -513,7 +544,7 @@ class Decoder(nn.Module):
         return {"prediction": x0, "turn_indicator_logit": turn_indicator_logit}
 
     def _forward_inference(
-        self, encoding, inputs, current_states, neighbor_current_mask, encoding_pooled
+        self, encoding, inputs, current_states, neighbor_current_mask, encoding_pooled, agent_class
     ):
         """Forward pass for inference mode.
 
@@ -536,7 +567,13 @@ class Decoder(nn.Module):
 
         if self._model_type == "flow_matching":
             return self._inference_flow_matching(
-                encoding, inputs, current_states, neighbor_current_mask, encoding_pooled, sampled_trajectories
+                encoding,
+                inputs,
+                current_states,
+                neighbor_current_mask,
+                encoding_pooled,
+                sampled_trajectories,
+                agent_class,
             )
         elif self._model_type == "x_start":
             return self._inference_x_start(
@@ -546,6 +583,7 @@ class Decoder(nn.Module):
                 neighbor_current_mask,
                 encoding_pooled,
                 sampled_trajectories,
+                agent_class,
             )
         else:
             raise NotImplementedError(f"Unknown model type {self._model_type}")
@@ -583,6 +621,7 @@ class Decoder(nn.Module):
         current_states, neighbor_current_mask, ego_current, neighbors_current = (
             self._prepare_current_states(inputs)
         )
+        agent_class = self._build_agent_class(inputs, neighbor_current_mask)
 
         B, P, _ = current_states.shape
         assert P == (1 + self._predicted_neighbor_num)
@@ -592,8 +631,20 @@ class Decoder(nn.Module):
 
         # Dispatch to training or inference
         if self.training:
-            return self._forward_training(encoding, inputs, neighbor_current_mask, encoding_pooled)
+            return self._forward_training(
+                encoding,
+                inputs,
+                current_states,
+                neighbor_current_mask,
+                encoding_pooled,
+                agent_class,
+            )
         else:
             return self._forward_inference(
-                encoding, inputs, current_states, neighbor_current_mask, encoding_pooled
+                encoding,
+                inputs,
+                current_states,
+                neighbor_current_mask,
+                encoding_pooled,
+                agent_class,
             )

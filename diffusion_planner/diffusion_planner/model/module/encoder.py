@@ -1,23 +1,24 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from timm.layers import DropPath
-from timm.layers import Mlp
+from timm.layers import DropPath, Mlp
 
 from diffusion_planner.dimensions import *
 from diffusion_planner.model.module.mixer import MixerBlock
 
 CLASS_TYPE_EGO = 0
-CLASS_TYPE_NEIGHBOR = 1
-CLASS_TYPE_STATIC = 2
-CLASS_TYPE_LANE = 3
-CLASS_TYPE_ROUTE = 4
-CLASS_TYPE_POLYGON = 5
-CLASS_TYPE_LINE_STRING = 6
-CLASS_TYPE_GOAL_POSE = 7
-CLASS_TYPE_EGO_SHAPE = 8
-CLASS_TYPE_TURN_INDICATOR = 9
-CLASS_TYPE_NUM = 10
+CLASS_TYPE_NEIGHBOR_VEHICLE = 1
+CLASS_TYPE_NEIGHBOR_PEDESTRIAN = 2
+CLASS_TYPE_NEIGHBOR_BICYCLE = 3
+CLASS_TYPE_STATIC = 4
+CLASS_TYPE_LANE = 5
+CLASS_TYPE_ROUTE = 6
+CLASS_TYPE_POLYGON = 7
+CLASS_TYPE_LINE_STRING = 8
+CLASS_TYPE_GOAL_POSE = 9
+CLASS_TYPE_EGO_SHAPE = 10
+CLASS_TYPE_TURN_INDICATOR = 11
+CLASS_TYPE_NUM = 12
 
 
 def add_class_type(x, class_type):
@@ -35,6 +36,23 @@ def add_class_type(x, class_type):
         torch.full((B, T), class_type, device=x.device, dtype=torch.long),
         num_classes=CLASS_TYPE_NUM,
     ).to(dtype=x.dtype)
+    return torch.cat([x, class_type_tensor], dim=-1)
+
+
+def add_neighbor_class_type(x, neighbor_type):
+    """
+    Add neighbor-specific class type to the input tensor.
+    Args:
+        x: Tensor of shape (B, P, D=4) where D=4 represents (x, y, cos, sin)
+        neighbor_type: Tensor of shape (B, P, 3) one-hot type (vehicle, pedestrian, bicycle)
+    Returns:
+        x: Tensor with neighbor class type added at the end
+    """
+    B, P, D = x.shape
+    assert D == 4, "Input tensor must have 4 features (x, y, cos, sin)"
+
+    type_idx = neighbor_type.argmax(dim=-1) + CLASS_TYPE_NEIGHBOR_VEHICLE
+    class_type_tensor = F.one_hot(type_idx, num_classes=CLASS_TYPE_NUM).to(dtype=x.dtype)
     return torch.cat([x, class_type_tensor], dim=-1)
 
 
@@ -158,7 +176,6 @@ class Encoder(nn.Module):
 
         # Initialize embedding MLP:
         nn.init.normal_(self.pos_emb.weight, std=0.02)
-        nn.init.normal_(self.neighbor_encoder.type_emb.weight, std=0.02)
         nn.init.normal_(self.lane_encoder.speed_limit_emb.weight, std=0.02)
         nn.init.normal_(self.lane_encoder.attribute_emb.weight, std=0.02)
 
@@ -400,8 +417,6 @@ class NeighborEncoder(nn.Module):
 
         self._hidden_dim = hidden_dim
 
-        self.type_emb = nn.Linear(3, channels_mlp_dim)
-
         self.channel_pre_project = Mlp(
             in_features=8 + 1,
             hidden_features=channels_mlp_dim,
@@ -438,7 +453,7 @@ class NeighborEncoder(nn.Module):
         x = x[..., :8]
 
         pos = x[:, :, -1, :4].clone()  # x, y, cos, sin
-        pos = add_class_type(pos, CLASS_TYPE_NEIGHBOR)
+        pos = add_neighbor_class_type(pos, neighbor_type)
 
         B, P, V, _ = x.shape
         mask_v = torch.sum(torch.ne(x[..., :8], 0), dim=-1).to(x.device) == 0
@@ -459,10 +474,6 @@ class NeighborEncoder(nn.Module):
 
         # pooling
         x = torch.mean(x, dim=1)
-
-        neighbor_type = neighbor_type.view(B * P, -1)
-        type_embedding = self.type_emb(neighbor_type)
-        x = x + type_embedding
 
         x = self.emb_project(self.norm(x))
         x_result = x * valid_indices.float().unsqueeze(-1)
