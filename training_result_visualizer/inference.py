@@ -24,14 +24,19 @@ class Predictor:
         self.model.eval()
 
     @torch.no_grad()
-    def predict(self, npz_path: str | Path) -> np.ndarray:
+    def predict(
+        self,
+        npz_path: str | Path,
+        noise_scale: float = 0.0,
+        noise_seed: int = 0,
+    ) -> np.ndarray:
         data = _load_npz_data(npz_path, self.device)
         data = self.model_args.observation_normalizer(data)
 
         batch_size = data["ego_current_state"].shape[0]
         agent_count = 1 + int(self.model_args.predicted_neighbor_num)
         future_len = int(self.model_args.future_len)
-        data["sampled_trajectories"] = torch.zeros(
+        sampled_trajectories = torch.zeros(
             batch_size,
             agent_count,
             future_len + 1,
@@ -39,6 +44,19 @@ class Predictor:
             dtype=torch.float32,
             device=self.device,
         )
+        if noise_scale > 0.0:
+            generator = torch.Generator(device=self.device)
+            generator.manual_seed(int(noise_seed))
+            sampled_trajectories[:, :, 1:, :] = float(noise_scale) * torch.randn(
+                batch_size,
+                agent_count,
+                future_len,
+                4,
+                dtype=torch.float32,
+                device=self.device,
+                generator=generator,
+            )
+        data["sampled_trajectories"] = sampled_trajectories
 
         _, outputs = self.model(data)
         return outputs["prediction"][0].detach().cpu().numpy()

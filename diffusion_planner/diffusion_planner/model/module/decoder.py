@@ -19,6 +19,16 @@ def replace_current_state(x: torch.Tensor, current_states: torch.Tensor) -> torc
     return torch.cat([current_states[:, :, None, :], x[:, :, 1:, :]], dim=2)
 
 
+def snr_loss_weight(t: torch.Tensor) -> torch.Tensor:
+    """Compute exp(2) * sigmoid(log-SNR - 2) for the linear VP SDE."""
+    noise_schedule = dpm.NoiseScheduleVP()
+    half_log_snr = noise_schedule.marginal_lambda(t)
+    log_snr = 2.0 * half_log_snr
+    return torch.exp(torch.ones((), device=t.device, dtype=t.dtype) * 2.0) * torch.sigmoid(
+        log_snr - 2.0
+    )
+
+
 def compute_training_loss(
     model: nn.Module,
     inputs: dict[str, torch.Tensor],
@@ -101,6 +111,7 @@ def compute_training_loss(
         + args.coeff_position_lon_loss * position_lon_loss
         + args.coeff_heading_l2_loss * heading_l2_loss
     )  # [B, P, T]
+    dpm_loss = dpm_loss * snr_loss_weight(t[..., 1:, 0])
 
     masked_prediction_loss = dpm_loss[:, 1:, :][neighbors_future_valid]
 

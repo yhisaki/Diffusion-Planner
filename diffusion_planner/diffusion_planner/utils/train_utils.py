@@ -83,10 +83,12 @@ def resume_model(
     path: PathLike,
     model: nn.Module,
     optimizer: Optimizer,
-    scheduler: Any,
+    scheduler: Any | None,
     ema: Any,
     device: torch.device | str,
-) -> tuple[nn.Module, Optimizer, Any, int, str | None, Any]:
+) -> tuple[nn.Module, Optimizer, int, str | None, Any] | tuple[
+    nn.Module, Optimizer, Any, int, str | None, Any
+]:
     """
     load ckpt from path
     """
@@ -103,12 +105,13 @@ def resume_model(
     except:
         print("no pretrained optimizer found")
 
-    # load schedule
-    try:
-        scheduler.load_state_dict(ckpt["schedule"])
-        print("Schedule load done")
-    except:
-        print("no schedule found,")
+    if scheduler is not None:
+        # load schedule
+        try:
+            scheduler.load_state_dict(ckpt["schedule"])
+            print("Schedule load done")
+        except:
+            print("no schedule found,")
 
     # load step
     try:
@@ -134,7 +137,9 @@ def resume_model(
     except:
         print("no ema shadow found")
 
-    return model, optimizer, scheduler, init_epoch, wandb_id, ema
+    if scheduler is not None:
+        return model, optimizer, scheduler, init_epoch, wandb_id, ema
+    return model, optimizer, init_epoch, wandb_id, ema
 
 
 def resume_encoder_model(path: PathLike, model: nn.Module, device: torch.device | str) -> nn.Module:

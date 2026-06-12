@@ -15,6 +15,7 @@ from diffusion_planner.dimensions import *
 from diffusion_planner.model.diffusion_planner import Diffusion_Planner
 from diffusion_planner.train_epoch import heading_to_cos_sin
 from diffusion_planner.utils.config import Config
+from diffusion_planner.utils.train_utils import normalize_state_dict_keys
 
 torch.backends.cuda.enable_flash_sdp(False)
 torch.backends.cuda.enable_mem_efficient_sdp(False)
@@ -39,7 +40,6 @@ FULL_INPUT_NAMES = [
     "goal_pose",
     "ego_shape",
     "turn_indicators",
-    "delay",
 ]
 
 ENCODER_INPUT_NAMES = [
@@ -192,21 +192,35 @@ class DecoderONNXWrapper(nn.Module):
         neighbor_agents_past: torch.Tensor,
         ego_current_state: torch.Tensor,
     ) -> torch.Tensor:
-        neighbors_current = neighbor_agents_past[:, : self.decoder._predicted_neighbor_num, -1, :4]
-        neighbor_current_mask = torch.sum(torch.ne(neighbors_current, 0), dim=-1) == 0
         batch_size = encoding.shape[0]
         agent_num = 1 + self.decoder._predicted_neighbor_num
+        ego_current = ego_current_state[:, None, :4]
+        neighbors_current = neighbor_agents_past[:, : self.decoder._predicted_neighbor_num, -1, :4]
+        neighbor_current_mask = torch.sum(torch.ne(neighbors_current[..., :4], 0), dim=-1) == 0
+        current_states = torch.cat([ego_current, neighbors_current], dim=1)
+
+        neighbor_type = neighbor_agents_past[:, : self.decoder._predicted_neighbor_num, -1, 8:11]
+        neighbor_class = neighbor_type.argmax(dim=-1) + 1
+        neighbor_class = torch.where(
+            neighbor_current_mask,
+            torch.ones_like(neighbor_class),
+            neighbor_class,
+        )
+        ego_class = torch.zeros((batch_size, 1), dtype=torch.long, device=neighbor_class.device)
+        agent_class = torch.cat([ego_class, neighbor_class.long()], dim=1)
 
         sampled_trajectories = sampled_trajectories.reshape(
             batch_size, agent_num, 1 + self.decoder._future_len, 4
         )
 
         model_output = self.decoder.dit(
-            sampled_trajectories,
-            diffusion_time,
-            encoding,
-            neighbor_current_mask,
+            x=sampled_trajectories,
+            t=diffusion_time,
+            cross_c=encoding,
+            neighbor_current_mask=neighbor_current_mask,
             ego_current_state=ego_current_state,
+            agent_class=agent_class,
+            current_states=current_states,
         ).reshape(batch_size, agent_num, 1 + self.decoder._future_len, 4)
 
         return model_output
@@ -256,7 +270,6 @@ class FullONNXWrapper(nn.Module):
         goal_pose: torch.Tensor,
         ego_shape: torch.Tensor,
         turn_indicators: torch.Tensor,
-        delay: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         inputs = {
             "sampled_trajectories": sampled_trajectories,
@@ -275,7 +288,6 @@ class FullONNXWrapper(nn.Module):
             "goal_pose": goal_pose,
             "ego_shape": ego_shape,
             "turn_indicators": turn_indicators,
-            "delay": delay,
         }
         _, decoder_outputs = self.model(inputs)
         return decoder_outputs["prediction"], decoder_outputs["turn_indicator_logit"]
@@ -323,7 +335,6 @@ def build_inputs_from_npz(npz_path: Path) -> TensorDict:
     inputs["turn_indicators"] = torch.tensor(
         data["turn_indicators"], dtype=torch.float32
     ).unsqueeze(0)
-    inputs["delay"] = torch.zeros(1, 1, dtype=torch.float32)
     return inputs
 
 
@@ -361,7 +372,6 @@ def build_dummy_inputs() -> TensorDict:
     inputs["goal_pose"] = torch.randn(1, POSE_DIM, dtype=torch.float32)
     inputs["ego_shape"] = torch.tensor([[2.75, 4.34, 1.70]], dtype=torch.float32)
     inputs["turn_indicators"] = torch.randint(0, 3, (1, INPUT_T + 1), dtype=torch.float32)
-    inputs["delay"] = torch.zeros(1, 1, dtype=torch.float32)
     return inputs
 
 
@@ -405,7 +415,7 @@ def load_model(config_json_path: str, ckpt_path: str, use_ema: bool) -> Diffusio
     else:
         state_dict = ckpt["model"]
         print("Loading regular model weights")
-    model.load_state_dict({k.replace("module.", ""): v for k, v in state_dict.items()})
+    model.load_state_dict(normalize_state_dict_keys(state_dict))
     return model
 
 
@@ -540,13 +550,14 @@ def run_ort_in_subprocess(model_path: Path, np_inputs: NumpyDict) -> list[np.nda
 import numpy as np
 import onnxruntime as ort
 data = np.load("{input_path}", allow_pickle=True)
-inputs = {{k: data[k] for k in data.files}}
 sess_options = ort.SessionOptions()
 sess_options.log_severity_level = 3
 sess = ort.InferenceSession(
     "{model_path}", sess_options,
     providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
 print("ORT providers:", sess.get_providers())
+required_inputs = {{i.name for i in sess.get_inputs()}}
+inputs = {{k: data[k] for k in data.files if k in required_inputs}}
 outputs = sess.run(None, inputs)
 np.savez("{output_path}", **{{f"out_{{i}}": o for i, o in enumerate(outputs)}})
 """
@@ -734,7 +745,7 @@ if __name__ == "__main__":
         print(f"Error: '{root_dir}' is not a directory")
         exit(1)
 
-    pth_files = list(root_dir.rglob("*.pth"))
+    pth_files = list(root_dir.rglob("latest.pth"))
     print(f"Found {len(pth_files)} .pth file(s) in '{root_dir}'")
 
     skipped_count = 0

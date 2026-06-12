@@ -35,6 +35,7 @@ class TrainingResultViewer:
         self.predictor: Predictor | None = None
         self.npz_paths: list[Path] = []
         self.current_index = 0
+        self.noise_seed = 0
         if model_path and path_list_path:
             self.configure(model_path, path_list_path, device=device)
 
@@ -61,11 +62,12 @@ class TrainingResultViewer:
         if not self.npz_paths:
             raise gr.Error("path_list.json に有効な NPZ path がありません。")
         self.current_index = 0
+        self.noise_seed = 0
         traj_fig, fig_x, fig_y, info, idx = self.load_current()
         return traj_fig, fig_x, fig_y, info, idx, max(0, len(self.npz_paths) - 1)
 
     def load_current(
-        self, time_step: int = 0, view_range: int = 60
+        self, time_step: int = 0, view_range: int = 60, noise_scale: float = 0.0
     ) -> tuple[object, object, object, str, int]:
         empty = go.Figure()
         if not self.npz_paths:
@@ -77,7 +79,11 @@ class TrainingResultViewer:
         self.current_index = idx
         npz_path = self.npz_paths[idx]
         data = load_npz(npz_path)
-        prediction = self.predictor.predict(npz_path)
+        prediction = self.predictor.predict(
+            npz_path=npz_path,
+            noise_scale=float(noise_scale),
+            noise_seed=self.noise_seed,
+        )
         marker_step = time_step if time_step > 0 else None
         traj_fig = plot_prediction_vs_gt(
             data, prediction, view_range=view_range, time_step=marker_step
@@ -87,7 +93,9 @@ class TrainingResultViewer:
             f"Sample {idx + 1} / {len(self.npz_paths)}\n"
             f"NPZ: {npz_path}\n"
             f"Model: {self.model_path}\n"
-            f"Device: {self.device_name}"
+            f"Device: {self.device_name}\n"
+            f"Noise scale: {float(noise_scale):.2f}\n"
+            f"Noise seed: {self.noise_seed}"
         )
         return traj_fig, fig_x, fig_y, info, idx
 
@@ -102,6 +110,10 @@ class TrainingResultViewer:
     def shuffle(self, *args) -> tuple:
         random.shuffle(self.npz_paths)
         self.current_index = 0
+        return self.load_current(*args)
+
+    def resample_noise(self, *args) -> tuple:
+        self.noise_seed += 1
         return self.load_current(*args)
 
 
@@ -147,7 +159,13 @@ def build_interface(viewer: TrainingResultViewer) -> gr.Blocks:
                     0, 79, value=0, step=1, label="GT Time Step Marker (0=hidden)"
                 )
                 view_range = gr.Slider(20, 200, value=60, step=5, label="View Range [m]")
-                info_text = gr.Textbox(label="Info", interactive=False, lines=5)
+
+                gr.Markdown("### Diffusion Input Noise")
+                noise_scale = gr.Slider(
+                    0.0, 1.0, value=0.0, step=0.01, label="Noise Scale"
+                )
+                btn_resample_noise = gr.Button("Resample Noise", size="sm")
+                info_text = gr.Textbox(label="Info", interactive=False, lines=7)
 
             with gr.Column(scale=2):
                 traj_plot = gr.Plot(label="Prediction vs GT")
@@ -155,7 +173,7 @@ def build_interface(viewer: TrainingResultViewer) -> gr.Blocks:
                     plot_x = gr.Plot(label="Prediction x")
                     plot_y = gr.Plot(label="Prediction y")
 
-        reload_inputs = [time_step, view_range]
+        reload_inputs = [time_step, view_range, noise_scale]
         outputs = [traj_plot, plot_x, plot_y, info_text, sample_slider]
 
         def _configure(*args):
@@ -177,9 +195,13 @@ def build_interface(viewer: TrainingResultViewer) -> gr.Blocks:
 
         btn_shuffle.click(viewer.shuffle, inputs=reload_inputs, outputs=outputs)
         btn_reload.click(viewer.load_current, inputs=reload_inputs, outputs=outputs)
+        btn_resample_noise.click(
+            viewer.resample_noise, inputs=reload_inputs, outputs=outputs
+        )
         sample_slider.change(viewer.jump, inputs=[sample_slider] + reload_inputs, outputs=outputs)
         time_step.release(viewer.load_current, inputs=reload_inputs, outputs=outputs)
         view_range.release(viewer.load_current, inputs=reload_inputs, outputs=outputs)
+        noise_scale.release(viewer.load_current, inputs=reload_inputs, outputs=outputs)
 
     return demo
 

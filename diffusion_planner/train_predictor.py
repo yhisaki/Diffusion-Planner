@@ -9,7 +9,6 @@ from diffusion_planner.train_epoch import train_epoch
 from diffusion_planner.utils import ddp
 from diffusion_planner.utils.data_augmentation import StatePerturbation
 from diffusion_planner.utils.dataset import DiffusionPlannerData
-from diffusion_planner.utils.lr_schedule import CosineAnnealingWarmUpRestarts
 from diffusion_planner.utils.normalizer import ObservationNormalizer, StateNormalizer
 from diffusion_planner.utils.train_utils import (
     get_model,
@@ -100,7 +99,6 @@ def get_args():
     parser.add_argument("--train_epochs", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=512)
     parser.add_argument("--learning_rate", type=float, default=1e-4)
-    parser.add_argument("--warm_up_epoch", type=int, default=5)
     parser.add_argument("--encoder_drop_path_rate", type=float, default=0.1)
     parser.add_argument("--decoder_drop_path_rate", type=float, default=0.1)
     parser.add_argument("--use_ego_history", type=boolean, default=True)
@@ -298,7 +296,6 @@ def model_training(args):
             "lr": args.learning_rate,
         }
     ])
-    scheduler = CosineAnnealingWarmUpRestarts(optimizer, train_epochs, args.warm_up_epoch)
 
     if args.use_ema:
         model_ema = ModelEma(
@@ -309,11 +306,11 @@ def model_training(args):
 
     if args.resume_model_path is not None:
         print(f"Model loaded from {args.resume_model_path}")
-        diffusion_planner, optimizer, scheduler, init_epoch, wandb_id, model_ema = resume_model(
+        diffusion_planner, optimizer, init_epoch, wandb_id, model_ema = resume_model(
             args.resume_model_path,
             diffusion_planner,
             optimizer,
-            scheduler,
+            None,
             model_ema,
             args.device,
         )
@@ -366,19 +363,6 @@ def model_training(args):
         if args.ddp:
             torch.distributed.barrier()
 
-        # Adjust learning rate for final 10 epochs
-        final_epoch_count = 10
-        if epoch >= train_epochs - final_epoch_count:
-            base_lr = args.learning_rate
-            if epoch >= train_epochs - final_epoch_count // 2:  # Last 5 epochs: LR * 1/100
-                adjusted_lr = base_lr * 0.01
-            else:  # First 5 of final 10 epochs: LR * 1/10
-                adjusted_lr = base_lr * 0.1
-            for param_group in optimizer.param_groups:
-                param_group["lr"] = adjusted_lr
-            if global_rank == 0:
-                print(f"Final phase: Epoch {epoch + 1}, LR adjusted to {adjusted_lr}")
-
         # training step
         train_loss, train_total_loss = train_epoch(
             train_loader,
@@ -389,7 +373,6 @@ def model_training(args):
             aug,
             epoch=epoch,
             save_path=save_path,
-            scheduler=scheduler,
         )
 
         if global_rank == 0:
@@ -406,12 +389,10 @@ def model_training(args):
                 "model": get_model_state_dict(diffusion_planner),
                 "ema_state_dict": model_ema.ema.state_dict(),
                 "optimizer": optimizer.state_dict(),
-                "schedule": scheduler.state_dict(),
                 "wandb_id": wandb_id,
             }
             torch.save(model_dict, f"{save_path}/model_epoch_{epoch + 1}.pth")
 
-        scheduler.step()
         train_sampler.set_epoch(epoch + 1)
 
 
