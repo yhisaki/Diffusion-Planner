@@ -57,6 +57,7 @@ ENCODER_INPUT_NAMES = [
     "goal_pose",
     "ego_shape",
     "turn_indicators",
+    "ego_current_state",
 ]
 
 DECODER_INPUT_NAMES = [
@@ -153,6 +154,7 @@ class EncoderONNXWrapper(nn.Module):
         goal_pose: torch.Tensor,
         ego_shape: torch.Tensor,
         turn_indicators: torch.Tensor,
+        ego_current_state: torch.Tensor,
     ) -> torch.Tensor:
         inputs = {
             "ego_agent_past": ego_agent_past,
@@ -169,6 +171,7 @@ class EncoderONNXWrapper(nn.Module):
             "goal_pose": goal_pose,
             "ego_shape": ego_shape,
             "turn_indicators": turn_indicators,
+            "ego_current_state": ego_current_state,
         }
         return self.encoder(inputs)
 
@@ -217,8 +220,8 @@ class DecoderONNXWrapper(nn.Module):
             x=sampled_trajectories,
             t=diffusion_time,
             cross_c=encoding,
+            cross_c_mask=self.decoder._make_encoding_mask(encoding),
             neighbor_current_mask=neighbor_current_mask,
-            ego_current_state=ego_current_state,
             agent_class=agent_class,
             current_states=current_states,
         ).reshape(batch_size, agent_num, 1 + self.decoder._future_len, 4)
@@ -238,11 +241,11 @@ class TurnIndicatorONNXWrapper(nn.Module):
         agent_num = 1 + self.decoder._predicted_neighbor_num
         final_x0 = final_x0.reshape(batch_size, agent_num, 1 + self.decoder._future_len, 4)
 
-        encoding_pooled = torch.mean(encoding, dim=1)
+        encoding_mask = self.decoder._make_encoding_mask(encoding)
         ego_trajectory = final_x0[:, 0, 1::10, :2].reshape(
             batch_size, 2 * (self.decoder._future_len // 10)
         )
-        return self.decoder._compute_turn_indicator(ego_trajectory, encoding_pooled)
+        return self.decoder.turn_indicator_predictor(ego_trajectory, encoding, encoding_mask)
 
 
 class FullONNXWrapper(nn.Module):

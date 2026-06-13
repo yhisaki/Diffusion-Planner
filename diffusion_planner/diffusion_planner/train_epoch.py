@@ -3,7 +3,7 @@ import time
 import torch
 from torch import nn
 
-from diffusion_planner.model.module.decoder import compute_training_loss
+from diffusion_planner.loss import compute_training_loss
 from diffusion_planner.utils import ddp
 from diffusion_planner.utils.data_augmentation import StatePerturbation
 from diffusion_planner.utils.train_utils import get_epoch_mean_loss, get_model, get_model_state_dict
