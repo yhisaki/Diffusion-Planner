@@ -59,7 +59,8 @@ class DiTBlock(nn.Module):
         Args:
             x: Agent trajectory tokens, shape (B, P, hidden_dim).
             y: Diffusion-time conditioning, shape (B, P, hidden_dim).
-            self_attn_mask: Agent self-attention mask, shape (B, P). True means invalid.
+            self_attn_mask: Agent-to-agent attention mask, shape (B * num_heads, P, P).
+                True blocks attention from a query row to a key column.
             cross_c: Encoder context tokens, shape (B, N, hidden_dim).
             cross_c_mask: Encoder context mask, shape (B, N). True means invalid.
         """
@@ -71,7 +72,12 @@ class DiTBlock(nn.Module):
         x = (
             x
             + gate_msa
-            * self.attn(modulated_x, modulated_x, modulated_x, key_padding_mask=self_attn_mask)[0]
+            * self.attn(
+                modulated_x,
+                modulated_x,
+                modulated_x,
+                attn_mask=self_attn_mask,
+            )[0]
         )
 
         modulated_x = modulate(self.norm2(x), shift_mlp, scale_mlp)
@@ -139,6 +145,7 @@ class DiT(nn.Module):
             f"{output_dim=} must equal {trajectory_len=} * {state_dim=}"
         )
 
+        self.heads = heads
         self.trajectory_len = trajectory_len
         self.state_dim = state_dim
         self.agent_embedding = nn.Embedding(4, hidden_dim)
@@ -160,6 +167,37 @@ class DiT(nn.Module):
             DiTBlock(hidden_dim, heads, dropout, mlp_ratio) for i in range(depth)
         ])
         self.final_layer = FinalLayer(hidden_dim, output_dim)
+
+    def _make_agent_self_attention_mask(
+        self,
+        neighbor_current_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Build the structural agent attention mask.
+
+        The ego token is index 0. Ego may attend to neighbors, but neighbor queries
+        cannot attend to the ego key. This encodes the assumption that ego behavior can
+        depend on predicted neighbors, while neighbor predictions do not depend on ego.
+
+        Invalid neighbors are masked as keys for valid queries. For invalid neighbor
+        queries, only their own key is left unmasked to avoid all-masked attention rows,
+        which would otherwise produce NaNs inside MultiheadAttention.
+        """
+        B, neighbor_num = neighbor_current_mask.shape
+        agent_num = neighbor_num + 1
+        device = neighbor_current_mask.device
+
+        ego_invalid_mask = torch.zeros((B, 1), dtype=torch.bool, device=device)
+        invalid_agent_mask = torch.cat([ego_invalid_mask, neighbor_current_mask], dim=1)
+
+        mask = invalid_agent_mask[:, None, :].expand(B, agent_num, agent_num).clone()
+        mask[:, 1:, 0] = True
+
+        invalid_query_mask = invalid_agent_mask[:, :, None]
+        self_only_mask = ~torch.eye(agent_num, dtype=torch.bool, device=device).unsqueeze(0)
+        mask = torch.where(invalid_query_mask, self_only_mask, mask)
+
+        return mask.repeat_interleave(self.heads, dim=0)
 
     def forward(
         self,
@@ -200,11 +238,16 @@ class DiT(nn.Module):
         x_embedding = self.agent_embedding(agent_class)  # (B, P, hidden_dim)
         x = x + x_embedding
 
-        ego_mask = torch.zeros((B, 1), dtype=torch.bool, device=x.device)
-        self_attn_mask = torch.cat([ego_mask, neighbor_current_mask], dim=1)
+        self_attn_mask = self._make_agent_self_attention_mask(neighbor_current_mask)
 
         for block in self.blocks:
-            x = block(x, t, self_attn_mask, cross_c, cross_c_mask)
+            x = block(
+                x,
+                t,
+                self_attn_mask,
+                cross_c,
+                cross_c_mask,
+            )
 
         x = self.final_layer(x, t)  # (B, P, output_dim)
         x = x.reshape(B, P, T, D)
