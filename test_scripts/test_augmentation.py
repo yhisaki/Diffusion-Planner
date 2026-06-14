@@ -48,7 +48,6 @@ if args.augment_type == "quintic":
         augment_prob=1.0,
         num_refine=10,
         device="cpu",
-        ego_past_noise_std=0.1,
         use_smoothing_future_trajectory=not args.no_smoothing_future_trajectory,
     )
 else:
@@ -63,8 +62,8 @@ view_range = 30
 visualize_inputs(deepcopy(data), save_path=None, ax=ax, view_ranges=[view_range])
 
 # Get augmentation ranges from the aug object
-lo = aug._low.cpu().numpy()[0]  # Extract from tuple
-hi = aug._high.cpu().numpy()[0]  # Extract from tuple
+lo = aug._low.cpu().numpy()
+hi = aug._high.cpu().numpy()
 x_min, y_min = lo[0], lo[1]
 x_max, y_max = hi[0], hi[1]
 

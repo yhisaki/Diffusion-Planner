@@ -49,7 +49,6 @@ class StatePerturbation:
         augment_prob: float,
         num_refine: int,
         device: torch.device | str,
-        ego_past_noise_std: float,
         use_smoothing_future_trajectory: bool,
     ) -> None:
         """
@@ -57,15 +56,13 @@ class StatePerturbation:
         :param augment_prob: probability between 0 and 1 of applying the data augmentation
         :param num_refine: number of refinement steps for quintic interpolation
         :param device: torch device
-        :param ego_past_noise_std: std of noise applied to ego past trajectory
         :param use_smoothing_future_trajectory: whether to apply smoothing to future trajectory
         """
         self._augment_prob = augment_prob
         self._device = torch.device(device)
-        self._ego_past_noise_std = ego_past_noise_std
         self._use_smoothing_future_trajectory = use_smoothing_future_trajectory
-        lo = ([0.0, -0.75, -0.2, -1, -0.5, -0.2, -0.1, 0.0, 0.0],)
-        hi = ([0.0, +0.75, +0.2, +1, +0.5, +0.2, +0.1, 0.0, 0.0],)
+        lo = [0.0, -0.75, -0.2, -1, -0.5, -0.2, -0.1, 0.0, 0.0]
+        hi = [0.0, +0.75, +0.2, +1, +0.5, +0.2, +0.1, 0.0, 0.0]
         self._low = torch.tensor(lo).to(self._device)
         self._high = torch.tensor(hi).to(self._device)
 
@@ -105,24 +102,10 @@ class StatePerturbation:
         inputs["ego_current_state"][aug_flag] = aug_ego_current_state[aug_flag]
         ego_future[aug_flag] = interpolated_ego_future[aug_flag]
 
-        # Scale past trajectory and current state velocity/acceleration
-        B_aug = aug_flag.sum().item()
-        if B_aug > 0:
-            W = self._ego_past_noise_std
-            scale = torch.normal(mean=1.0, std=W, size=(B_aug, 1, 1)).to(
-                inputs["ego_agent_past"].device
-            )
-            scale = torch.clamp(scale, 1.0 - 2 * W, 1.0 + 2 * W)
+        if aug_flag.any():
+            inputs["ego_agent_past"][aug_flag] = 0.0
 
-            ego_past_aug = inputs["ego_agent_past"][aug_flag].clone()
-            ego_past_aug[..., :2] = ego_past_aug[..., :2] * scale
-            inputs["ego_agent_past"][aug_flag] = ego_past_aug
-
-            scale_1d = scale.squeeze(-1)  # (B_aug, 1)
-            inputs["ego_current_state"][aug_flag, 4:6] *= scale_1d  # vx, vy
-            inputs["ego_current_state"][aug_flag, 6:8] *= scale_1d  # ax, ay
-
-        return self.centric_transform(inputs, ego_future, neighbors_future)
+        return self.centric_transform(inputs, ego_future, neighbors_future, aug_flag)
 
     def augment(self, inputs):
         # Only aug current state
@@ -134,7 +117,7 @@ class StatePerturbation:
             abs(ego_current_state[:, 4]) < 2.0
         )
 
-        random_tensor = torch.rand(B, len(self._low)).to(self._device)
+        random_tensor = torch.rand(B, self._low.shape[0], device=self._device)
         scaled_random_tensor = self._low + (self._high - self._low) * random_tensor
 
         new_state = torch.zeros((B, 9), dtype=torch.float32).to(self._device)
@@ -198,6 +181,7 @@ class StatePerturbation:
         inputs: torch.Tensor,
         ego_future: torch.Tensor,
         neighbors_future: torch.Tensor,
+        aug_flag: torch.Tensor,
     ):
         cur_state = inputs["ego_current_state"].clone()
         center_xy = cur_state[:, :2]
@@ -225,21 +209,15 @@ class StatePerturbation:
         ego_future[..., 2] = heading_transform(ego_future[..., 2], transform_matrix)
 
         # ego past
-        # inputs["ego_agent_past"][..., :2] = vector_transform(
-        #     inputs["ego_agent_past"][..., :2], transform_matrix, center_xy
-        # )
-        # inputs["ego_agent_past"][..., 2:4] = vector_transform(
-        #     inputs["ego_agent_past"][..., 2:4], transform_matrix
-        # )
-
-        ego_past4d = torch.cat(
-            [
-                inputs["ego_agent_past"][..., :2],  # x, y
-                torch.cos(inputs["ego_agent_past"][..., 2:3]),  # cos
-                torch.sin(inputs["ego_agent_past"][..., 2:3]),  # sin
-            ],
-            dim=-1,
+        mask = torch.sum(torch.ne(inputs["ego_agent_past"], 0), dim=-1) == 0
+        inputs["ego_agent_past"][..., :2] = vector_transform(
+            inputs["ego_agent_past"][..., :2], transform_matrix, center_xy
         )
+        inputs["ego_agent_past"][..., 2:4] = vector_transform(
+            inputs["ego_agent_past"][..., 2:4], transform_matrix
+        )
+        inputs["ego_agent_past"][mask] = 0.0
+
         ego_future4d = torch.cat(
             [
                 ego_future[..., :2],  # x, y
@@ -249,9 +227,12 @@ class StatePerturbation:
             dim=-1,
         )
 
-        if self._use_smoothing_future_trajectory:
-            ego_future4d = smoothing_future_trajectory(
-                ego_past4d, inputs["ego_current_state"], ego_future4d
+        if self._use_smoothing_future_trajectory and (~aug_flag).any():
+            non_aug_flag = ~aug_flag
+            ego_future4d[non_aug_flag] = smoothing_future_trajectory(
+                inputs["ego_agent_past"][non_aug_flag],
+                inputs["ego_current_state"][non_aug_flag],
+                ego_future4d[non_aug_flag],
             )
 
         ego_future = torch.cat(
@@ -264,6 +245,16 @@ class StatePerturbation:
             dim=-1,
         )
         inputs["ego_agent_future"] = ego_future
+
+        # goal pose
+        mask = torch.sum(torch.ne(inputs["goal_pose"], 0), dim=-1) == 0
+        inputs["goal_pose"][..., :2] = vector_transform(
+            inputs["goal_pose"][..., :2], transform_matrix, center_xy
+        )
+        inputs["goal_pose"][..., 2:4] = vector_transform(
+            inputs["goal_pose"][..., 2:4], transform_matrix
+        )
+        inputs["goal_pose"][mask] = 0.0
 
         # neighbor past xy
         mask = torch.sum(torch.ne(inputs["neighbor_agents_past"][..., :6], 0), dim=-1) == 0
@@ -356,6 +347,12 @@ class StatePerturbation:
 
         P = self.num_refine
         dt = self.time_interval
+        if P < 2 or P >= ego_future.shape[1]:
+            raise ValueError(
+                f"num_refine must satisfy 2 <= num_refine < future_len; "
+                f"got num_refine={P}, future_len={ego_future.shape[1]}"
+            )
+
         B = aug_current_state.shape[0]
         M_t = self.t_matrix.unsqueeze(0).expand(B, -1, -1)
         A = self.coeff_matrix.unsqueeze(0).expand(B, -1, -1)

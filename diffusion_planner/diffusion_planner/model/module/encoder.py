@@ -82,7 +82,7 @@ class Encoder(nn.Module):
         )
 
         self.ego_encoder = EgoHistoryEncoder(
-            self.ego_history_len,
+            config.time_len,
             drop_path_rate=config.encoder_drop_path_rate,
             hidden_dim=config.hidden_dim,
             depth=config.encoder_mixer_depth,
@@ -93,6 +93,7 @@ class Encoder(nn.Module):
             drop_path_rate=config.encoder_drop_path_rate,
             hidden_dim=config.hidden_dim,
             depth=config.encoder_mixer_depth,
+            num_heads=config.num_heads,
         )
         self.static_encoder = StaticEncoder(
             config.static_objects_state_dim,
@@ -425,35 +426,40 @@ class NeighborEncoder(nn.Module):
         drop_path_rate: float,
         hidden_dim: int,
         depth: int,
+        num_heads: int,
     ) -> None:
         super().__init__()
-        tokens_mlp_dim = 64
-        channels_mlp_dim = 128
 
         self._hidden_dim = hidden_dim
 
-        self.channel_pre_project = Mlp(
+        self.input_projection = nn.Linear(
             in_features=8 + 1,
-            hidden_features=channels_mlp_dim,
-            out_features=channels_mlp_dim,
-            act_layer=nn.GELU,
-            drop=0.0,
+            out_features=hidden_dim,
         )
-        self.token_pre_project = Mlp(
-            in_features=time_len,
-            hidden_features=tokens_mlp_dim,
-            out_features=tokens_mlp_dim,
-            act_layer=nn.GELU,
-            drop=0.0,
+        self.time_embedding = nn.Embedding(time_len, hidden_dim)
+        self.query = nn.Parameter(torch.zeros(1, 1, hidden_dim))
+        self.attention = nn.MultiheadAttention(
+            embed_dim=hidden_dim,
+            num_heads=num_heads,
+            dropout=drop_path_rate,
+            batch_first=True,
+        )
+        self.blocks = nn.ModuleList(
+            [
+                Mlp(
+                    in_features=hidden_dim,
+                    hidden_features=hidden_dim,
+                    out_features=hidden_dim,
+                    act_layer=nn.GELU,
+                    drop=drop_path_rate,
+                )
+                for _ in range(depth)
+            ]
         )
 
-        self.blocks = nn.ModuleList([
-            MixerBlock(tokens_mlp_dim, channels_mlp_dim, drop_path_rate) for i in range(depth)
-        ])
-
-        self.norm = nn.LayerNorm(channels_mlp_dim)
+        self.norm = nn.LayerNorm(hidden_dim)
         self.emb_project = Mlp(
-            in_features=channels_mlp_dim,
+            in_features=hidden_dim,
             hidden_features=hidden_dim,
             out_features=hidden_dim,
             act_layer=nn.GELU,
@@ -472,31 +478,82 @@ class NeighborEncoder(nn.Module):
             mask: (B, P), True when every timestep for that neighbor is empty
             pos: (B, P, 4 + CLASS_TYPE_NUM), latest neighbor pose plus class type
         """
-        neighbor_type = x[:, :, -1, 8:]
-        x = x[..., :8]
+        B, P, V, _ = x.shape
+        raw_neighbor_history = x
+        zero_step_invalid_mask = torch.sum(torch.ne(raw_neighbor_history[..., :8], 0), dim=-1) == 0
+        neighbor_invalid_mask = torch.all(zero_step_invalid_mask, dim=-1)
 
-        pos = x[:, :, -1, :4].clone()  # x, y, cos, sin
+        consecutive_diff = torch.any(
+            raw_neighbor_history[:, :, 1:, :8] != raw_neighbor_history[:, :, :-1, :8],
+            dim=-1,
+        )
+        has_changed_before_or_at = torch.cat(
+            [
+                torch.zeros((B, P, 1), dtype=torch.bool, device=x.device),
+                torch.cumsum(consecutive_diff.to(torch.int), dim=-1).to(torch.bool),
+            ],
+            dim=-1,
+        )
+        has_future_change = torch.flip(
+            torch.cumsum(torch.flip(consecutive_diff.to(torch.int), dims=[-1]), dim=-1),
+            dims=[-1],
+        ).to(torch.bool)
+        same_as_next = torch.cat(
+            [
+                ~consecutive_diff,
+                torch.zeros((B, P, 1), dtype=torch.bool, device=x.device),
+            ],
+            dim=-1,
+        )
+        leading_repeated_padding_mask = torch.cat(
+            [has_future_change, torch.zeros((B, P, 1), dtype=torch.bool, device=x.device)],
+            dim=-1,
+        ) & ~has_changed_before_or_at & same_as_next
+        history_step_invalid_mask = zero_step_invalid_mask | leading_repeated_padding_mask
+        valid_step_mask = ~history_step_invalid_mask
+
+        timestep_index = torch.arange(V, device=x.device).view(1, 1, V)
+        latest_valid_index = torch.where(
+            valid_step_mask,
+            timestep_index,
+            torch.zeros_like(timestep_index),
+        ).amax(dim=-1)
+        gather_index = latest_valid_index.view(B, P, 1, 1).expand(-1, -1, 1, x.shape[-1])
+        latest_neighbor_state = x.gather(dim=2, index=gather_index).squeeze(2)
+
+        neighbor_type = latest_neighbor_state[..., 8:]
+        pos = latest_neighbor_state[..., :4].clone()  # x, y, cos, sin
         pos = add_neighbor_class_type(pos, neighbor_type)
 
-        B, P, V, _ = x.shape
-        history_step_invalid_mask = torch.sum(torch.ne(x[..., :8], 0), dim=-1).to(x.device) == 0
-        neighbor_invalid_mask = torch.sum(~history_step_invalid_mask, dim=-1) == 0
+        x = x[..., :8]
         x = torch.cat([x, (~history_step_invalid_mask).float().unsqueeze(-1)], dim=-1)
         x = x.view(B * P, V, -1)
         x = torch.cat([x[..., :4], torch.zeros_like(x[..., 4:6]), x[..., 6:]], dim=-1)
 
         valid_slot_mask = ~neighbor_invalid_mask.view(-1)
-        x = torch.where(valid_slot_mask.view(-1, 1, 1), x, torch.zeros_like(x))
+        history_step_invalid_mask = history_step_invalid_mask.view(B * P, V)
 
-        x = self.channel_pre_project(x)
-        x = x.permute(0, 2, 1)
-        x = self.token_pre_project(x)
-        x = x.permute(0, 2, 1)
+        x = self.input_projection(x)
+        timestep = torch.arange(V, device=x.device)
+        x = x + self.time_embedding(timestep).unsqueeze(0)
+
+        safe_history_step_invalid_mask = torch.where(
+            valid_slot_mask.unsqueeze(-1),
+            history_step_invalid_mask,
+            torch.zeros_like(history_step_invalid_mask),
+        )
+        query = self.query.expand(B * P, -1, -1)
+        x, _ = self.attention(
+            query=query,
+            key=x,
+            value=x,
+            key_padding_mask=safe_history_step_invalid_mask,
+            need_weights=False,
+        )
+        x = x.squeeze(1)
+
         for block in self.blocks:
-            x = block(x)
-
-        # pooling
-        x = torch.mean(x, dim=1)
+            x = x + block(x)
 
         x = self.emb_project(self.norm(x))
         x_result = x * valid_slot_mask.float().unsqueeze(-1)

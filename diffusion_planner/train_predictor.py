@@ -77,12 +77,6 @@ def get_args():
         "--num_refine", type=int, default=20, help="number of refinement steps for augmentation"
     )
     parser.add_argument(
-        "--ego_past_noise_std",
-        type=float,
-        default=0.1,
-        help="std of noise applied to ego past trajectory during augmentation",
-    )
-    parser.add_argument(
         "--use_smoothing_future_trajectory",
         default=True,
         type=boolean,
@@ -238,7 +232,6 @@ def model_training(args):
             augment_prob=args.augment_prob,
             num_refine=args.num_refine,
             device=args.device,
-            ego_past_noise_std=args.ego_past_noise_std,
             use_smoothing_future_trajectory=args.use_smoothing_future_trajectory,
         )
     else:

@@ -208,9 +208,9 @@ class DiT(nn.Module):
 
         x = self.final_layer(x, t)  # (B, P, output_dim)
         x = x.reshape(B, P, T, D)
-        if P > 1 and T > 1:
-            neighbor_xy = x[:, 1:, 1:, :2] + current_states[:, 1:, None, :2]
-            neighbor_future = torch.cat([neighbor_xy, x[:, 1:, 1:, 2:]], dim=-1)
-            neighbors = torch.cat([x[:, 1:, :1], neighbor_future], dim=2)
-            x = torch.cat([x[:, :1], neighbors], dim=1)
+        # if P > 1 and T > 1:
+        #     neighbor_xy = x[:, 1:, 1:, :2] + current_states[:, 1:, None, :2]
+        #     neighbor_future = torch.cat([neighbor_xy, x[:, 1:, 1:, 2:]], dim=-1)
+        #     neighbors = torch.cat([x[:, 1:, :1], neighbor_future], dim=2)
+        #     x = torch.cat([x[:, :1], neighbors], dim=1)
         return x
