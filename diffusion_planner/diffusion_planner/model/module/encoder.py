@@ -20,8 +20,7 @@ CLASS_TYPE_LINE_STRING = 8
 CLASS_TYPE_GOAL_POSE = 9
 CLASS_TYPE_EGO_SHAPE = 10
 CLASS_TYPE_TURN_INDICATOR = 11
-CLASS_TYPE_EGO_SPEED = 12
-CLASS_TYPE_NUM = 13
+CLASS_TYPE_NUM = 12
 
 EncoderOutput: TypeAlias = tuple[torch.Tensor, torch.Tensor, torch.Tensor]
 
@@ -67,10 +66,7 @@ class Encoder(nn.Module):
 
         self.hidden_dim = config.hidden_dim
 
-        self.use_ego_history = config.use_ego_history
-        self.ego_history_dropout_rate = config.ego_history_dropout_rate
         self.use_turn_indicators = config.use_turn_indicators
-        self.ego_history_len = 6
 
         self.token_num = (
             1  # Ego agent past token
@@ -83,7 +79,6 @@ class Encoder(nn.Module):
             + 1  # Goal pose token
             + 1  # Ego shape token
             + 1  # Turn indicator token
-            + 1  # Ego speed token
         )
 
         self.ego_encoder = EgoHistoryEncoder(
@@ -91,6 +86,7 @@ class Encoder(nn.Module):
             drop_path_rate=config.encoder_drop_path_rate,
             hidden_dim=config.hidden_dim,
             depth=config.encoder_mixer_depth,
+            history_dropout_rate=config.ego_history_dropout_rate,
         )
         self.neighbor_encoder = NeighborEncoder(
             config.time_len,
@@ -149,12 +145,6 @@ class Encoder(nn.Module):
             hidden_dim=config.hidden_dim,
             class_type=CLASS_TYPE_TURN_INDICATOR,
         )
-        self.ego_speed_encoder = VectorEncoder(
-            num_float=1,
-            hidden_dim=config.hidden_dim,
-            class_type=CLASS_TYPE_EGO_SPEED,
-        )
-
         # Pose/type embedding encodes x, y, cos, sin, and class type.
         self.pose_type_emb = nn.Linear(4 + CLASS_TYPE_NUM, config.hidden_dim)
 
@@ -193,9 +183,7 @@ class Encoder(nn.Module):
         kept as all-zero vectors so the decoder can recover the same mask from the output.
         """
         # ego agent
-        ego_agent_past = inputs["ego_agent_past"][:, -self.ego_history_len :].clone()
-        if not self.use_ego_history:
-            ego_agent_past = torch.zeros_like(ego_agent_past)
+        ego_agent_past = inputs["ego_agent_past"].clone()
 
         # agents
         neighbors = inputs["neighbor_agents_past"].clone()  # (B, P, T, 11)
@@ -225,7 +213,7 @@ class Encoder(nn.Module):
         # ego shape
         ego_shape = inputs["ego_shape"]  # (B, D=3)
 
-        # ego speed
+        # ego speed, embedded additively inside the ego history token
         ego_speed = inputs["ego_current_state"][:, 4:5]  # (B, D=1)
 
         # turn indicator
@@ -236,12 +224,7 @@ class Encoder(nn.Module):
 
         B = neighbors.shape[0]
 
-        encoding_ego, ego_mask, ego_pos = self.ego_encoder(ego_agent_past)
-
-        if self.ego_history_dropout_rate > 0:
-            encoding_ego = F.dropout(
-                encoding_ego, p=self.ego_history_dropout_rate, training=self.training
-            )
+        encoding_ego, ego_mask, ego_pos = self.ego_encoder(ego_agent_past, ego_speed)
 
         encoding_neighbors, neighbors_mask, neighbor_pos = self.neighbor_encoder(neighbors)
         encoding_static, static_mask, static_pos = self.static_encoder(static)
@@ -261,8 +244,6 @@ class Encoder(nn.Module):
         encoding_turn_indicator, turn_indicator_mask, turn_indicator_pos = (
             self.turn_indicator_encoder(turn_indicator)
         )
-        encoding_ego_speed, ego_speed_mask, ego_speed_pos = self.ego_speed_encoder(ego_speed)
-
         encoding_input = torch.cat(
             [
                 encoding_ego,
@@ -275,7 +256,6 @@ class Encoder(nn.Module):
                 encoding_goal_pose,
                 encoding_ego_shape,
                 encoding_turn_indicator,
-                encoding_ego_speed,
             ],
             dim=1,
         )
@@ -293,7 +273,6 @@ class Encoder(nn.Module):
                 goal_pose_mask,
                 ego_shape_mask,
                 turn_indicator_mask,
-                ego_speed_mask,
             ],
             dim=1,
         ).view(-1)
@@ -311,7 +290,6 @@ class Encoder(nn.Module):
                 goal_pose_pos,
                 ego_shape_pos,
                 turn_indicator_pos,
-                ego_speed_pos,
             ],
             dim=1,
         ).view(B * self.token_num, -1)
@@ -342,12 +320,14 @@ class EgoHistoryEncoder(nn.Module):
         drop_path_rate: float,
         hidden_dim: int,
         depth: int,
+        history_dropout_rate: float,
     ) -> None:
         super().__init__()
         tokens_mlp_dim = 64
         channels_mlp_dim = 128
 
         self._hidden_dim = hidden_dim
+        self._history_dropout_rate = history_dropout_rate
 
         self.channel_pre_project = Mlp(
             in_features=4,
@@ -363,9 +343,16 @@ class EgoHistoryEncoder(nn.Module):
             act_layer=nn.GELU,
             drop=0.0,
         )
+        self.speed_project = Mlp(
+            in_features=1,
+            hidden_features=channels_mlp_dim,
+            out_features=channels_mlp_dim,
+            act_layer=nn.GELU,
+            drop=0.0,
+        )
 
         self.blocks = nn.ModuleList([
-            MixerBlock(tokens_mlp_dim, channels_mlp_dim, drop_path_rate) for i in range(depth)
+            MixerBlock(tokens_mlp_dim, channels_mlp_dim, drop_path_rate) for _ in range(depth)
         ])
 
         self.norm = nn.LayerNorm(channels_mlp_dim)
@@ -377,14 +364,33 @@ class EgoHistoryEncoder(nn.Module):
             drop=drop_path_rate,
         )
 
-    def forward(self, x: torch.Tensor) -> EncoderOutput:
+    def _make_history_mask(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Return a sample-level mask for ego history.
+
+        True means the ego history token is invalid. A history whose all (x, y, cos, sin)
+        values are zero is invalid in both training and inference. During training, the
+        whole history token can also be dropped as a regularization.
+        """
+        history_invalid_mask = ~torch.any(x != 0, dim=(1, 2), keepdim=True)
+
+        if self.training and self._history_dropout_rate > 0:
+            drop_mask = torch.rand((x.shape[0], 1, 1), device=x.device)
+            history_invalid_mask = history_invalid_mask | (drop_mask < self._history_dropout_rate)
+
+        return history_invalid_mask.squeeze(-1)
+
+    def forward(self, x: torch.Tensor, speed: torch.Tensor) -> EncoderOutput:
         """
         Args:
             x: Ego history, shape (B, T, 4), fields are x, y, cos, sin.
+                T is the number of ego history timesteps.
+            speed: Current ego speed, shape (B, 1). It is embedded and added to the
+                pooled ego history token instead of being emitted as a separate token.
 
         Returns:
             encoding: (B, 1, hidden_dim)
-            mask: (B, 1), always False because ego history is a required token
+            mask: (B, 1), True when the whole ego history token is invalid/dropped
             pos: (B, 1, 4 + CLASS_TYPE_NUM), current ego pose plus class type
         """
         B, T, D = x.shape
@@ -392,7 +398,8 @@ class EgoHistoryEncoder(nn.Module):
         pos = pos.unsqueeze(1)  # (B, 1, D=4)
         pos = add_class_type(pos, CLASS_TYPE_EGO)
 
-        mask = torch.zeros((B, 1), dtype=torch.bool, device=x.device)
+        mask = self._make_history_mask(x)
+        valid_history_mask = ~mask
 
         x = self.channel_pre_project(x)
         x = x.permute(0, 2, 1)
@@ -402,10 +409,11 @@ class EgoHistoryEncoder(nn.Module):
         for block in self.blocks:
             x = block(x)
 
-        # pooling
-        x = torch.mean(x, dim=1, keepdim=True)  # (B, 1, C=channels_mlp_dim)
+        x = torch.mean(x, dim=1, keepdim=True)
+        x = x + self.speed_project(speed).unsqueeze(1)
 
         x = self.emb_project(self.norm(x))  # (B, hidden_dim)
+        x = x * valid_history_mask.unsqueeze(-1).to(dtype=x.dtype)
 
         return x, mask, pos
 
@@ -815,7 +823,6 @@ class VectorEncoder(nn.Module):
             CLASS_TYPE_GOAL_POSE,
             CLASS_TYPE_EGO_SHAPE,
             CLASS_TYPE_TURN_INDICATOR,
-            CLASS_TYPE_EGO_SPEED,
         ], "Invalid class type for VectorEncoder"
         assert not use_input_as_pos or num_float >= 4, (
             "VectorEncoder requires at least 4 inputs when using input as position"
