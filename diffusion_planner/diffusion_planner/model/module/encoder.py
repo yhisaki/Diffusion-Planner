@@ -148,6 +148,12 @@ class Encoder(nn.Module):
         )
         # Pose/type embedding encodes x, y, cos, sin, and class type.
         self.pose_type_emb = nn.Linear(4 + CLASS_TYPE_NUM, config.hidden_dim)
+        self.fusion = Fusion(
+            hidden_dim=config.hidden_dim,
+            num_heads=config.num_heads,
+            drop_path_rate=config.encoder_drop_path_rate,
+            depth=config.encoder_mixer_depth,
+        )
 
         self._init_parameters()
 
@@ -276,7 +282,8 @@ class Encoder(nn.Module):
                 turn_indicator_mask,
             ],
             dim=1,
-        ).view(-1)
+        )
+        encoding_mask_flat = encoding_mask.view(-1)
 
         # Add geometry/type positional embedding only to valid tokens.
         pose_type_input = torch.cat(
@@ -296,17 +303,18 @@ class Encoder(nn.Module):
         ).view(B * self.token_num, -1)
         pose_type_embedding = self.pose_type_emb(pose_type_input)
         pose_type_embedding = torch.where(
-            (~encoding_mask).unsqueeze(-1),
+            (~encoding_mask_flat).unsqueeze(-1),
             pose_type_embedding,
             torch.zeros_like(pose_type_embedding),
         )
 
         encoder_outputs = encoding_input + pose_type_embedding.view(B, self.token_num, -1)
+        encoder_outputs = self.fusion(encoder_outputs, encoding_mask)
 
         # Keep invalid tokens exactly zero after normalization. Decoder uses this invariant
         # to build its cross-attention mask without a separate encoder mask output.
         encoder_outputs = torch.where(
-            (~encoding_mask).view(B, self.token_num, 1),
+            (~encoding_mask_flat).view(B, self.token_num, 1),
             encoder_outputs,
             torch.zeros_like(encoder_outputs),
         )
@@ -444,18 +452,16 @@ class NeighborEncoder(nn.Module):
             dropout=drop_path_rate,
             batch_first=True,
         )
-        self.blocks = nn.ModuleList(
-            [
-                Mlp(
-                    in_features=hidden_dim,
-                    hidden_features=hidden_dim,
-                    out_features=hidden_dim,
-                    act_layer=nn.GELU,
-                    drop=drop_path_rate,
-                )
-                for _ in range(depth)
-            ]
-        )
+        self.blocks = nn.ModuleList([
+            Mlp(
+                in_features=hidden_dim,
+                hidden_features=hidden_dim,
+                out_features=hidden_dim,
+                act_layer=nn.GELU,
+                drop=drop_path_rate,
+            )
+            for _ in range(depth)
+        ])
 
         self.norm = nn.LayerNorm(hidden_dim)
         self.emb_project = Mlp(
@@ -505,10 +511,14 @@ class NeighborEncoder(nn.Module):
             ],
             dim=-1,
         )
-        leading_repeated_padding_mask = torch.cat(
-            [has_future_change, torch.zeros((B, P, 1), dtype=torch.bool, device=x.device)],
-            dim=-1,
-        ) & ~has_changed_before_or_at & same_as_next
+        leading_repeated_padding_mask = (
+            torch.cat(
+                [has_future_change, torch.zeros((B, P, 1), dtype=torch.bool, device=x.device)],
+                dim=-1,
+            )
+            & ~has_changed_before_or_at
+            & same_as_next
+        )
         history_step_invalid_mask = zero_step_invalid_mask | leading_repeated_padding_mask
         valid_step_mask = ~history_step_invalid_mask
 
@@ -931,3 +941,71 @@ class VectorEncoder(nn.Module):
         x = self.projection(x).unsqueeze(1)  # (B, 1, hidden_dim)
 
         return x, mask, pos
+
+
+class FusionBlock(nn.Module):
+    def __init__(self, hidden_dim: int, num_heads: int, drop_path_rate: float) -> None:
+        super().__init__()
+        self.attn_norm = nn.LayerNorm(hidden_dim)
+        self.self_attn = nn.MultiheadAttention(
+            embed_dim=hidden_dim,
+            num_heads=num_heads,
+            dropout=drop_path_rate,
+            batch_first=True,
+        )
+        self.ffn_norm = nn.LayerNorm(hidden_dim)
+        self.ffn = Mlp(
+            in_features=hidden_dim,
+            hidden_features=hidden_dim * 4,
+            out_features=hidden_dim,
+            act_layer=nn.GELU,
+            drop=drop_path_rate,
+        )
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        valid_mask = (~mask).unsqueeze(-1)
+
+        normed_x = self.attn_norm(x)
+        x = (
+            x
+            + self.self_attn(
+                normed_x,
+                normed_x,
+                normed_x,
+                key_padding_mask=mask,
+                need_weights=False,
+            )[0]
+        )
+        x = torch.where(valid_mask, x, torch.zeros_like(x))
+
+        x = x + self.ffn(self.ffn_norm(x))
+        return torch.where(valid_mask, x, torch.zeros_like(x))
+
+
+class Fusion(nn.Module):
+    def __init__(
+        self,
+        hidden_dim: int,
+        num_heads: int,
+        drop_path_rate: float,
+        depth: int,
+    ) -> None:
+        super().__init__()
+        self.blocks = nn.ModuleList([
+            FusionBlock(hidden_dim, num_heads, drop_path_rate) for _ in range(depth)
+        ])
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        """
+        Fuse tokenized scene features with self-attention.
+
+        Args:
+            x: Context tokens, shape (B, N, hidden_dim).
+            mask: Invalid token mask, shape (B, N). True means invalid/padded.
+
+        Returns:
+            Fused context tokens, shape (B, N, hidden_dim). Invalid tokens stay zero.
+        """
+        for block in self.blocks:
+            x = block(x, mask)
+        return x
