@@ -58,9 +58,6 @@ def train_epoch(
 
         ego_future = inputs["ego_agent_future"]
         neighbors_future = inputs["neighbor_agents_future"]
-        # Normalize to ego-centric
-        if aug is not None:
-            inputs, ego_future, neighbors_future = aug(inputs, ego_future, neighbors_future)
 
         # heading to cos sin
         ego_future = heading_to_cos_sin(ego_future)

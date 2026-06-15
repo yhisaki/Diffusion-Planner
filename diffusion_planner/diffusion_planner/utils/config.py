@@ -27,3 +27,5 @@ class Config:
         # Default guidance scale; overridable without reloading the model.
         if not hasattr(self, "guidance_scale"):
             self.guidance_scale = 0.5
+        if not hasattr(self, "velocity_dropout_ratio"):
+            self.velocity_dropout_ratio = 0.0

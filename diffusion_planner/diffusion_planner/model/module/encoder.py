@@ -69,7 +69,7 @@ class Encoder(nn.Module):
         self.use_turn_indicators = config.use_turn_indicators
 
         self.token_num = (
-            1  # Ego agent past token
+            1  # Ego velocity token
             + config.agent_num
             + config.static_objects_num
             + config.lane_num
@@ -81,17 +81,16 @@ class Encoder(nn.Module):
             + 1  # Turn indicator token
         )
 
-        self.ego_encoder = EgoHistoryEncoder(
-            config.time_len,
-            drop_path_rate=config.encoder_drop_path_rate,
+        self.ego_velocity_encoder = VectorEncoder(
+            num_float=1,
             hidden_dim=config.hidden_dim,
-            depth=config.encoder_mixer_depth,
-            history_dropout_rate=config.ego_history_dropout_rate,
+            class_type=CLASS_TYPE_EGO,
+            dropout_ratio=getattr(config, "velocity_dropout_ratio", 0.0),
         )
         self.neighbor_encoder = NeighborEncoder(
             config.time_len,
-            drop_path_rate=config.encoder_drop_path_rate,
             hidden_dim=config.hidden_dim,
+            drop_path_rate=config.encoder_drop_path_rate,
             depth=config.encoder_mixer_depth,
             num_heads=config.num_heads,
         )
@@ -189,9 +188,6 @@ class Encoder(nn.Module):
         The returned tensor has shape (B, self.token_num, hidden_dim). Invalid tokens are
         kept as all-zero vectors so the decoder can recover the same mask from the output.
         """
-        # ego agent
-        ego_agent_past = inputs["ego_agent_past"].clone()
-
         # agents
         neighbors = inputs["neighbor_agents_past"].clone()  # (B, P, T, 11)
 
@@ -220,7 +216,7 @@ class Encoder(nn.Module):
         # ego shape
         ego_shape = inputs["ego_shape"]  # (B, D=3)
 
-        # ego speed, embedded additively inside the ego history token
+        # ego speed, encoded as the only ego context token
         ego_speed = inputs["ego_current_state"][:, 4:5]  # (B, D=1)
 
         # turn indicator
@@ -231,7 +227,7 @@ class Encoder(nn.Module):
 
         B = neighbors.shape[0]
 
-        encoding_ego, ego_mask, ego_pos = self.ego_encoder(ego_agent_past, ego_speed)
+        encoding_ego, ego_mask, ego_pos = self.ego_velocity_encoder(ego_speed)
 
         encoding_neighbors, neighbors_mask, neighbor_pos = self.neighbor_encoder(neighbors)
         encoding_static, static_mask, static_pos = self.static_encoder(static)
@@ -320,111 +316,6 @@ class Encoder(nn.Module):
         )
 
         return encoder_outputs
-
-
-class EgoHistoryEncoder(nn.Module):
-    def __init__(
-        self,
-        time_len: int,
-        drop_path_rate: float,
-        hidden_dim: int,
-        depth: int,
-        history_dropout_rate: float,
-    ) -> None:
-        super().__init__()
-        tokens_mlp_dim = 64
-        channels_mlp_dim = 128
-
-        self._hidden_dim = hidden_dim
-        self._history_dropout_rate = history_dropout_rate
-
-        self.channel_pre_project = Mlp(
-            in_features=4,
-            hidden_features=channels_mlp_dim,
-            out_features=channels_mlp_dim,
-            act_layer=nn.GELU,
-            drop=0.0,
-        )
-        self.token_pre_project = Mlp(
-            in_features=time_len,
-            hidden_features=tokens_mlp_dim,
-            out_features=tokens_mlp_dim,
-            act_layer=nn.GELU,
-            drop=0.0,
-        )
-        self.speed_project = Mlp(
-            in_features=1,
-            hidden_features=channels_mlp_dim,
-            out_features=channels_mlp_dim,
-            act_layer=nn.GELU,
-            drop=0.0,
-        )
-
-        self.blocks = nn.ModuleList([
-            MixerBlock(tokens_mlp_dim, channels_mlp_dim, drop_path_rate) for _ in range(depth)
-        ])
-
-        self.norm = nn.LayerNorm(channels_mlp_dim)
-        self.emb_project = Mlp(
-            in_features=channels_mlp_dim,
-            hidden_features=hidden_dim,
-            out_features=hidden_dim,
-            act_layer=nn.GELU,
-            drop=drop_path_rate,
-        )
-
-    def _make_history_mask(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Return a sample-level mask for ego history.
-
-        True means the ego history token is invalid. A history whose all (x, y, cos, sin)
-        values are zero is invalid in both training and inference. During training, the
-        whole history token can also be dropped as a regularization.
-        """
-        history_invalid_mask = ~torch.any(x != 0, dim=(1, 2), keepdim=True)
-
-        if self.training and self._history_dropout_rate > 0:
-            drop_mask = torch.rand((x.shape[0], 1, 1), device=x.device)
-            history_invalid_mask = history_invalid_mask | (drop_mask < self._history_dropout_rate)
-
-        return history_invalid_mask.squeeze(-1)
-
-    def forward(self, x: torch.Tensor, speed: torch.Tensor) -> EncoderOutput:
-        """
-        Args:
-            x: Ego history, shape (B, T, 4), fields are x, y, cos, sin.
-                T is the number of ego history timesteps.
-            speed: Current ego speed, shape (B, 1). It is embedded and added to the
-                pooled ego history token instead of being emitted as a separate token.
-
-        Returns:
-            encoding: (B, 1, hidden_dim)
-            mask: (B, 1), True when the whole ego history token is invalid/dropped
-            pos: (B, 1, 4 + CLASS_TYPE_NUM), current ego pose plus class type
-        """
-        B, T, D = x.shape
-        pos = x[:, -1].clone()  # (B, D=4[x, y, cos, sin])
-        pos = pos.unsqueeze(1)  # (B, 1, D=4)
-        pos = add_class_type(pos, CLASS_TYPE_EGO)
-
-        mask = self._make_history_mask(x)
-        valid_history_mask = ~mask
-
-        x = self.channel_pre_project(x)
-        x = x.permute(0, 2, 1)
-        x = self.token_pre_project(x)
-        x = x.permute(0, 2, 1)
-
-        for block in self.blocks:
-            x = block(x)
-
-        x = torch.mean(x, dim=1, keepdim=True)
-        x = x + self.speed_project(speed).unsqueeze(1)
-
-        x = self.emb_project(self.norm(x))  # (B, hidden_dim)
-        x = x * valid_history_mask.unsqueeze(-1).to(dtype=x.dtype)
-
-        return x, mask, pos
 
 
 class NeighborEncoder(nn.Module):
@@ -884,9 +775,11 @@ class VectorEncoder(nn.Module):
         hidden_dim: int,
         class_type: int,
         use_input_as_pos: bool = False,
+        dropout_ratio: float = 0.0,
     ) -> None:
         super().__init__()
         assert class_type in [
+            CLASS_TYPE_EGO,
             CLASS_TYPE_GOAL_POSE,
             CLASS_TYPE_EGO_SHAPE,
             CLASS_TYPE_TURN_INDICATOR,
@@ -898,6 +791,7 @@ class VectorEncoder(nn.Module):
         self._hidden_dim = hidden_dim
         self._class_type = class_type
         self._use_input_as_pos = use_input_as_pos
+        self._dropout_ratio = dropout_ratio
 
         self.projection = Mlp(
             in_features=num_float,
@@ -917,7 +811,8 @@ class VectorEncoder(nn.Module):
 
         Returns:
             encoding: (B, 1, hidden_dim)
-            mask: (B, 1), always False because these scalar/vector tokens are required
+            mask: (B, 1), False for required tokens. Tokens with a configured dropout
+                ratio can be masked during training.
             pos: (B, 1, 4 + CLASS_TYPE_NUM). Uses input pose when use_input_as_pos=True;
                 otherwise uses a neutral pose at the origin.
         """
@@ -937,8 +832,12 @@ class VectorEncoder(nn.Module):
         pos = add_class_type(pos, self._class_type)
 
         mask = torch.zeros((B, 1), dtype=torch.bool, device=x.device)
+        if self.training and self._dropout_ratio > 0:
+            drop_mask = torch.rand((B, 1), device=x.device) < self._dropout_ratio
+            mask = mask | drop_mask
 
         x = self.projection(x).unsqueeze(1)  # (B, 1, hidden_dim)
+        x = x * (~mask).unsqueeze(-1).to(dtype=x.dtype)
 
         return x, mask, pos
 

@@ -3,6 +3,7 @@ import json
 import os
 
 import torch
+import wandb
 from diffusion_planner.dimensions import *
 from diffusion_planner.model.diffusion_planner import Diffusion_Planner
 from diffusion_planner.train_epoch import train_epoch
@@ -21,8 +22,6 @@ from timm.utils import ModelEma
 from torch import optim
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
-
-import wandb
 
 
 def boolean(v):
@@ -70,18 +69,6 @@ def get_args():
     # DataLoader parameters
     parser.add_argument("--use_data_augment", default=True, type=boolean)
     parser.add_argument("--augment_prob", type=float, help="augmentation probability", default=0.5)
-    parser.add_argument(
-        "--augment_type", type=str, choices=["quintic", "bridge"], default="quintic"
-    )
-    parser.add_argument(
-        "--num_refine", type=int, default=20, help="number of refinement steps for augmentation"
-    )
-    parser.add_argument(
-        "--use_smoothing_future_trajectory",
-        default=True,
-        type=boolean,
-        help="whether to apply smoothing to future trajectory",
-    )
     parser.add_argument("--normalization_file_path", default="normalization.json", type=str)
     parser.add_argument("--num_workers", default=8, type=int)
     parser.add_argument("--pin-mem", action="store_true", help="Pin CPU memory in DataLoader")
@@ -95,7 +82,12 @@ def get_args():
     parser.add_argument("--learning_rate", type=float, default=1e-4)
     parser.add_argument("--encoder_drop_path_rate", type=float, default=0.1)
     parser.add_argument("--decoder_drop_path_rate", type=float, default=0.1)
-    parser.add_argument("--ego_history_dropout_rate", type=float, default=0.8)
+    parser.add_argument(
+        "--velocity_dropout_ratio",
+        type=float,
+        default=0.5,
+        help="probability of dropping the ego velocity token during training",
+    )
     parser.add_argument("--use_turn_indicators", type=boolean, default=True)
 
     parser.add_argument("--coeff_position_lat_loss", type=float, default=1.0)
@@ -228,17 +220,12 @@ def model_training(args):
 
     # set up data loaders
     if args.use_data_augment:
-        aug = StatePerturbation(
-            augment_prob=args.augment_prob,
-            num_refine=args.num_refine,
-            device=args.device,
-            use_smoothing_future_trajectory=args.use_smoothing_future_trajectory,
-        )
+        aug = StatePerturbation(augment_prob=args.augment_prob)
     else:
         aug = None
 
     # prepare dataset
-    train_set = DiffusionPlannerData(args.train_set_list)
+    train_set = DiffusionPlannerData(args.train_set_list, data_augmentation=aug)
 
     train_sampler = DistributedSampler(
         train_set, num_replicas=ddp.get_world_size(), rank=global_rank, shuffle=True

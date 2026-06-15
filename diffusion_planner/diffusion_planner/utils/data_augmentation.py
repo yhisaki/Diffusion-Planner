@@ -1,434 +1,385 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
 import numpy as np
-import torch
-
-from diffusion_planner.utils.unicycle_accel_curvature import smoothing_future_trajectory
-
-TIME_INTERVAL = 0.1
 
 
-def vector_transform(vector, transform_mat, bias=None):
-    """
-    vector: (B, ..., 2)
-    transform_mat: (B, 2, 2)
-    bias: (B, ..., 2)
-    """
-    shape = vector.shape
-    B = vector.shape[0]
-    nexpand = vector.ndim - 2
-    if bias is not None:
-        vector = vector - bias.reshape(B, *([1] * nexpand), -1)
-    vector = vector.reshape(B, -1, 2).permute(0, 2, 1)  # (B, 2, N1 * N2 ...)
-    return torch.bmm(transform_mat, vector).permute(0, 2, 1).reshape(*shape)  # (B, ..., 2)
+def _wrap_angle(angle: np.ndarray | float) -> np.ndarray | float:
+    return (angle + np.pi) % (2.0 * np.pi) - np.pi
 
 
-def heading_transform(heading, transform_mat):
-    """
-    heading: (B, ...)
-    transform_mat: (B, 2, 2)
-    """
-    B = heading.shape[0]
-    shape = heading.shape
-    heading = heading.reshape(B, -1)
-    transform_mat = transform_mat.reshape(B, 1, 2, 2)
-    return torch.atan2(
-        torch.cos(heading) * transform_mat[..., 1, 0]
-        + torch.sin(heading) * transform_mat[..., 1, 1],
-        torch.cos(heading) * transform_mat[..., 0, 0]
-        + torch.sin(heading) * transform_mat[..., 0, 1],
-    ).reshape(*shape)
+def _valid_xy(x: np.ndarray) -> np.ndarray:
+    return np.any(np.abs(x[..., :2]) > 1e-6, axis=-1)
+
+
+@dataclass(frozen=True)
+class EgoPerturbation:
+    x: float
+    y: float
+    yaw: float
+    speed: float
+
+
+@dataclass(frozen=True)
+class StatePerturbationConfig:
+    augment_prob: float = 0.5
+    min_speed: float = 2.0
+    min_length: float = 10.0
+    time_interval: float = 0.1
+    min_linearization_speed: float = 0.5
+    exact_position_gain: float = 2.0
+    exact_velocity_gain: float = 3.0
+    lateral_offset_std: float = 1.0
+    yaw_std: float = 0.05
+    default_wheel_base: float = 3.0
+    speed_scale_std: float = 0.05
 
 
 class StatePerturbation:
-    """
-    Data augmentation that perturbs the current ego position and generates a feasible trajectory that
-    satisfies polynomial constraints.
+    """Scene-level ego-centric data augmentation.
+
+    The raw dataset is already expressed in the current ego frame. This augmenter
+    samples a small virtual current ego pose in that frame, bends only the ego
+    history/future so they meet and leave that virtual pose smoothly, then
+    rewrites every geometric field into the new virtual ego frame.
     """
 
     def __init__(
         self,
-        augment_prob: float,
-        num_refine: int,
-        device: torch.device | str,
-        use_smoothing_future_trajectory: bool,
+        augment_prob: float = 0.5,
+        min_speed: float = 2.0,
+        min_length: float = 10.0,
+        time_interval: float = 0.1,
+        min_linearization_speed: float = 0.5,
+        exact_position_gain: float = 2.0,
+        exact_velocity_gain: float = 3.0,
+        lateral_offset_std: float = 1.0,
+        yaw_std: float = 0.05,
+        default_wheel_base: float = 3.0,
+        speed_scale_std: float = 0.05,
     ) -> None:
-        """
-        Initialize the augmentor,
-        :param augment_prob: probability between 0 and 1 of applying the data augmentation
-        :param num_refine: number of refinement steps for quintic interpolation
-        :param device: torch device
-        :param use_smoothing_future_trajectory: whether to apply smoothing to future trajectory
-        """
-        self._augment_prob = augment_prob
-        self._device = torch.device(device)
-        self._use_smoothing_future_trajectory = use_smoothing_future_trajectory
-        lo = [0.0, -0.75, -0.2, -1, -0.5, -0.2, -0.1, 0.0, 0.0]
-        hi = [0.0, +0.75, +0.2, +1, +0.5, +0.2, +0.1, 0.0, 0.0]
-        self._low = torch.tensor(lo).to(self._device)
-        self._high = torch.tensor(hi).to(self._device)
-
-        self.num_refine = num_refine
-        self.time_interval = TIME_INTERVAL
-
-        REFINE_HORIZON = num_refine * TIME_INTERVAL
-
-        T = REFINE_HORIZON + TIME_INTERVAL
-        self.coeff_matrix = torch.linalg.inv(
-            torch.tensor(
-                [
-                    [1, 0, 0, 0, 0, 0],
-                    [0, 1, 0, 0, 0, 0],
-                    [0, 0, 2, 0, 0, 0],
-                    [1, T, T**2, T**3, T**4, T**5],
-                    [0, 1, 2 * T, 3 * T**2, 4 * T**3, 5 * T**4],
-                    [0, 0, 2, 6 * T, 12 * T**2, 20 * T**3],
-                ],
-                device=device,
-                dtype=torch.float32,
-            )
-        )
-        self.t_matrix = torch.pow(
-            torch.linspace(TIME_INTERVAL, REFINE_HORIZON, num_refine).unsqueeze(1),
-            torch.arange(6).unsqueeze(0),
-        ).to(device=device)  # shape (B, N+1)
-
-    def __call__(self, inputs, ego_future, neighbors_future):
-        aug_flag, aug_ego_current_state = self.augment(inputs)
-
-        # Interpolate future trajectory
-        interpolated_ego_future = self.interpolation_future_trajectory(
-            aug_ego_current_state, ego_future
+        self.config = StatePerturbationConfig(
+            augment_prob=augment_prob,
+            min_speed=min_speed,
+            min_length=min_length,
+            time_interval=time_interval,
+            min_linearization_speed=min_linearization_speed,
+            exact_position_gain=exact_position_gain,
+            exact_velocity_gain=exact_velocity_gain,
+            lateral_offset_std=lateral_offset_std,
+            yaw_std=yaw_std,
+            default_wheel_base=default_wheel_base,
+            speed_scale_std=speed_scale_std,
         )
 
-        inputs["ego_current_state"][aug_flag] = aug_ego_current_state[aug_flag]
-        ego_future[aug_flag] = interpolated_ego_future[aug_flag]
+    def __call__(self, data: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        return self.augment(data)
 
-        if aug_flag.any():
-            inputs["ego_agent_past"][aug_flag] = 0.0
+    def augment(self, data: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        return self._augment(data, include_aux=False)
 
-        return self.centric_transform(inputs, ego_future, neighbors_future, aug_flag)
+    def augment_with_aux(self, data: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        return self._augment(data, include_aux=True)
 
-    def augment(self, inputs):
-        # Only aug current state
-        ego_current_state = inputs["ego_current_state"].clone()
-        wheel_base = inputs["ego_shape"][:, 0]  # (B,)
+    def _augment(
+        self, data: dict[str, np.ndarray], include_aux: bool = False
+    ) -> dict[str, np.ndarray]:
+        if np.random.random() >= self.config.augment_prob:
+            return data
+        if "ego_current_state" not in data:
+            return data
+        if abs(float(data["ego_current_state"][4])) < self.config.min_speed:
+            return data
+        if self._future_trajectory_length(data) <= self.config.min_length:
+            return data
 
-        B = ego_current_state.shape[0]
-        aug_flag = (torch.rand(B) < self._augment_prob).bool().to(self._device) & ~(
-            abs(ego_current_state[:, 4]) < 2.0
-        )
+        augmented = {
+            key: np.array(value, copy=True) if isinstance(value, np.ndarray) else value
+            for key, value in data.items()
+        }
 
-        random_tensor = torch.rand(B, self._low.shape[0], device=self._device)
-        scaled_random_tensor = self._low + (self._high - self._low) * random_tensor
+        perturbation = self._augment_ego_current(data["ego_current_state"])
+        if include_aux:
+            self._add_original_gt_in_augmented_frame(augmented, perturbation, source_data=data)
+        self._rollout_ego_future_with_dynamics(augmented, perturbation)
+        self._transform_scene_to_new_ego_frame(augmented, perturbation)
+        self._reset_ego_current_state(augmented, perturbation)
+        return augmented
 
-        new_state = torch.zeros((B, 9), dtype=torch.float32).to(self._device)
-        new_state[:, 3:] = ego_current_state[
-            :, 4:10
-        ]  # x, y, h is 0 because of ego-centric, update vx, vy, ax, ay, steering angle, yaw rate
-        new_state = new_state + scaled_random_tensor
-        new_state[:, 3] = torch.max(new_state[:, 3], torch.tensor(0.0, device=new_state.device))
-        new_state[:, -1] = torch.clip(new_state[:, -1], -0.85, 0.85)
-
-        ego_current_state[:, :2] = new_state[:, :2]
-        ego_current_state[:, 2] = torch.cos(new_state[:, 2])
-        ego_current_state[:, 3] = torch.sin(new_state[:, 2])
-        ego_current_state[:, 4:8] = new_state[:, 3:7]
-        ego_current_state[:, 8:10] = new_state[:, -2:]  # steering angle, yaw rate
-
-        # update steering angle and yaw rate
-        cur_velocity = ego_current_state[:, 4]
-        yaw_rate = ego_current_state[:, 9]
-
-        steering_angle = torch.zeros_like(cur_velocity)
-        new_yaw_rate = torch.zeros_like(yaw_rate)
-
-        mask = torch.abs(cur_velocity) < 0.2
-        not_mask = ~mask
-        steering_angle[not_mask] = torch.atan(
-            yaw_rate[not_mask] * wheel_base[not_mask] / torch.abs(cur_velocity[not_mask])
-        )
-        steering_angle[not_mask] = torch.clamp(
-            steering_angle[not_mask], -2 / 3 * np.pi, 2 / 3 * np.pi
-        )
-        new_yaw_rate[not_mask] = yaw_rate[not_mask]
-
-        ego_current_state[:, 8] = steering_angle
-        ego_current_state[:, 9] = new_yaw_rate
-
-        return aug_flag, ego_current_state
-
-    def normalize_angle(self, angle: np.ndarray | torch.Tensor) -> np.ndarray | torch.Tensor:
-        return (angle + np.pi) % (2 * np.pi) - np.pi
-
-    def get_transform_matrix_batch(self, cur_state):
-        processed_input = torch.column_stack(
-            (
-                cur_state[:, 2],  # cos
-                cur_state[:, 3],  # sin
-            )
-        )
-
-        reshaping_tensor = torch.tensor(
-            [
-                [1, 0, 0, 1],
-                [0, 1, -1, 0],
-            ],
-            dtype=torch.float32,
-        ).to(processed_input.device)
-        return (processed_input @ reshaping_tensor).reshape(-1, 2, 2)
-
-    def centric_transform(
+    def _add_original_gt_in_augmented_frame(
         self,
-        inputs: torch.Tensor,
-        ego_future: torch.Tensor,
-        neighbors_future: torch.Tensor,
-        aug_flag: torch.Tensor,
-    ):
-        cur_state = inputs["ego_current_state"].clone()
-        center_xy = cur_state[:, :2]
-        transform_matrix = self.get_transform_matrix_batch(cur_state)
+        data: dict[str, np.ndarray],
+        perturbation: EgoPerturbation,
+        source_data: dict[str, np.ndarray] | None = None,
+    ) -> None:
+        source_data = data if source_data is None else source_data
+        origin = np.array([perturbation.x, perturbation.y], dtype=np.float32)
+        for source_key, aux_key in (
+            ("ego_agent_future", "original_ego_agent_future_in_augmented_frame"),
+        ):
+            source = source_data.get(source_key)
+            if source is None:
+                continue
+            temp = {aux_key: np.array(source, copy=True)}
+            self._transform_xy_heading_angle(
+                temp, aux_key, origin, perturbation.yaw, use_mask=False
+            )
+            data[aux_key] = temp[aux_key]
 
-        # ego xy
-        inputs["ego_current_state"][..., :2] = vector_transform(
-            inputs["ego_current_state"][..., :2], transform_matrix, center_xy
-        )
-        # ego cos sin
-        inputs["ego_current_state"][..., 2:4] = vector_transform(
-            inputs["ego_current_state"][..., 2:4], transform_matrix
-        )
-        # ego vx, vy
-        inputs["ego_current_state"][..., 4:6] = vector_transform(
-            inputs["ego_current_state"][..., 4:6], transform_matrix
-        )
-        # ego ax, ay
-        inputs["ego_current_state"][..., 6:8] = vector_transform(
-            inputs["ego_current_state"][..., 6:8], transform_matrix
+        data["augmentation_perturbation"] = np.array(
+            [perturbation.x, perturbation.y, perturbation.yaw], dtype=np.float32
         )
 
-        # ego future xy
-        ego_future[..., :2] = vector_transform(ego_future[..., :2], transform_matrix, center_xy)
-        ego_future[..., 2] = heading_transform(ego_future[..., 2], transform_matrix)
+    def _augment_ego_current(self, current_state: np.ndarray) -> EgoPerturbation:
+        cfg = self.config
+        x = 0.0
+        y = float(np.random.normal(0.0, cfg.lateral_offset_std))
+        theta = float(np.random.normal(0.0, cfg.yaw_std))
+        speed_scale = float(np.random.normal(1.0, cfg.speed_scale_std))
+        current_speed = max(0.0, float(np.linalg.norm(current_state[4:6])))
+        speed = current_speed * speed_scale
+        return EgoPerturbation(float(x), float(y), float(theta), float(speed))
 
-        # ego past
-        mask = torch.sum(torch.ne(inputs["ego_agent_past"], 0), dim=-1) == 0
-        inputs["ego_agent_past"][..., :2] = vector_transform(
-            inputs["ego_agent_past"][..., :2], transform_matrix, center_xy
-        )
-        inputs["ego_agent_past"][..., 2:4] = vector_transform(
-            inputs["ego_agent_past"][..., 2:4], transform_matrix
-        )
-        inputs["ego_agent_past"][mask] = 0.0
+    @staticmethod
+    def _integrate_bicycle_velocity_steering_step(
+        x: float,
+        y: float,
+        theta: float,
+        velocity: float,
+        steering: float,
+        wheel_base: float,
+        dt: float,
+    ) -> tuple[float, float, float]:
+        heading_delta = velocity / max(wheel_base, 1e-3) * np.tan(steering) * dt
+        next_theta = float(_wrap_angle(theta + heading_delta))
+        next_x = x + velocity * np.cos(next_theta) * dt
+        next_y = y + velocity * np.sin(next_theta) * dt
+        return float(next_x), float(next_y), next_theta
 
-        ego_future4d = torch.cat(
-            [
-                ego_future[..., :2],  # x, y
-                torch.cos(ego_future[..., 2:3]),  # cos
-                torch.sin(ego_future[..., 2:3]),  # sin
-            ],
-            dim=-1,
+    @staticmethod
+    def _integrate_bicycle_accel_steering_step(
+        x: float,
+        y: float,
+        theta: float,
+        velocity: float,
+        acceleration: float,
+        steering: float,
+        wheel_base: float,
+        dt: float,
+    ) -> tuple[float, float, float, float]:
+        next_velocity = max(0.0, velocity + acceleration * dt)
+        next_x, next_y, next_theta = StatePerturbation._integrate_bicycle_velocity_steering_step(
+            x, y, theta, next_velocity, steering, wheel_base, dt
         )
+        return next_x, next_y, next_theta, float(next_velocity)
 
-        if self._use_smoothing_future_trajectory and (~aug_flag).any():
-            non_aug_flag = ~aug_flag
-            ego_future4d[non_aug_flag] = smoothing_future_trajectory(
-                inputs["ego_agent_past"][non_aug_flag],
-                inputs["ego_current_state"][non_aug_flag],
-                ego_future4d[non_aug_flag],
+    def _rollout_ego_future_with_dynamics(
+        self, data: dict[str, np.ndarray], perturbation: EgoPerturbation
+    ) -> None:
+        future = data.get("ego_agent_future")
+        if future is None or future.shape[-1] < 3:
+            return
+
+        original = np.array(future, copy=True)
+        states = self._dynamics_converging_future(
+            original=original,
+            current_state=data["ego_current_state"],
+            wheel_base=self._ego_wheel_base(data),
+            perturbation=perturbation,
+        )
+        future[...] = states.astype(future.dtype, copy=False)
+
+    def _dynamics_converging_future(
+        self,
+        original: np.ndarray,
+        current_state: np.ndarray,
+        wheel_base: float,
+        perturbation: EgoPerturbation,
+    ) -> np.ndarray:
+        cfg = self.config
+        dt = cfg.time_interval
+        n = original.shape[0]
+        out = np.zeros_like(original)
+
+        ref_position, ref_velocity, ref_acceleration = self._reference_states(
+            original, current_state
+        )
+        x = perturbation.x
+        y = perturbation.y
+        theta = perturbation.yaw
+        v = perturbation.speed
+
+        for t in range(n):
+            target_xy = ref_position[t]
+            current_xy = np.array([x, y], dtype=np.float64)
+            current_velocity = v * np.array([np.cos(theta), np.sin(theta)], dtype=np.float64)
+
+            position_error = current_xy - target_xy
+            velocity_error = current_velocity - ref_velocity[t]
+            virtual_input = (
+                ref_acceleration[t]
+                - cfg.exact_position_gain * position_error
+                - cfg.exact_velocity_gain * velocity_error
             )
 
-        ego_future = torch.cat(
-            [
-                ego_future4d[..., :2],  # x, y
-                torch.atan2(ego_future4d[..., 3], ego_future4d[..., 2]).unsqueeze(
-                    -1
-                ),  # heading from cos, sin
-            ],
-            dim=-1,
-        )
-        inputs["ego_agent_future"] = ego_future
+            cos_h = float(np.cos(theta))
+            sin_h = float(np.sin(theta))
+            ux = float(virtual_input[0])
+            uy = float(virtual_input[1])
+            linearization_speed = max(abs(v), cfg.min_linearization_speed)
 
-        # goal pose
-        mask = torch.sum(torch.ne(inputs["goal_pose"], 0), dim=-1) == 0
-        inputs["goal_pose"][..., :2] = vector_transform(
-            inputs["goal_pose"][..., :2], transform_matrix, center_xy
-        )
-        inputs["goal_pose"][..., 2:4] = vector_transform(
-            inputs["goal_pose"][..., 2:4], transform_matrix
-        )
-        inputs["goal_pose"][mask] = 0.0
-
-        # neighbor past xy
-        mask = torch.sum(torch.ne(inputs["neighbor_agents_past"][..., :6], 0), dim=-1) == 0
-        inputs["neighbor_agents_past"][..., :2] = vector_transform(
-            inputs["neighbor_agents_past"][..., :2], transform_matrix, center_xy
-        )
-        # neighbor past cos sin
-        inputs["neighbor_agents_past"][..., 2:4] = vector_transform(
-            inputs["neighbor_agents_past"][..., 2:4], transform_matrix
-        )
-        # neighbor past vx, vy
-        inputs["neighbor_agents_past"][..., 4:6] = vector_transform(
-            inputs["neighbor_agents_past"][..., 4:6], transform_matrix
-        )
-        inputs["neighbor_agents_past"][mask] = 0.0
-
-        # neighbor future xy
-        mask = torch.sum(torch.ne(neighbors_future[..., :2], 0), dim=-1) == 0
-        neighbors_future[..., :2] = vector_transform(
-            neighbors_future[..., :2], transform_matrix, center_xy
-        )
-        neighbors_future[..., 2] = heading_transform(neighbors_future[..., 2], transform_matrix)
-        neighbors_future[mask] = 0.0
-
-        # lanes
-        mask = torch.sum(torch.ne(inputs["lanes"][..., :8], 0), dim=-1) == 0
-        inputs["lanes"][..., :2] = vector_transform(
-            inputs["lanes"][..., :2], transform_matrix, center_xy
-        )
-        inputs["lanes"][..., 2:4] = vector_transform(inputs["lanes"][..., 2:4], transform_matrix)
-        inputs["lanes"][..., 4:6] = vector_transform(inputs["lanes"][..., 4:6], transform_matrix)
-        inputs["lanes"][..., 6:8] = vector_transform(inputs["lanes"][..., 6:8], transform_matrix)
-        inputs["lanes"][mask] = 0.0
-
-        # route_lanes
-        mask = torch.sum(torch.ne(inputs["route_lanes"][..., :8], 0), dim=-1) == 0
-        inputs["route_lanes"][..., :2] = vector_transform(
-            inputs["route_lanes"][..., :2], transform_matrix, center_xy
-        )
-        inputs["route_lanes"][..., 2:4] = vector_transform(
-            inputs["route_lanes"][..., 2:4], transform_matrix
-        )
-        inputs["route_lanes"][..., 4:6] = vector_transform(
-            inputs["route_lanes"][..., 4:6], transform_matrix
-        )
-        inputs["route_lanes"][..., 6:8] = vector_transform(
-            inputs["route_lanes"][..., 6:8], transform_matrix
-        )
-        inputs["route_lanes"][mask] = 0.0
-
-        # polygons
-        mask = torch.sum(torch.ne(inputs["polygons"], 0), dim=-1) == 0
-        inputs["polygons"][..., :2] = vector_transform(
-            inputs["polygons"][..., :2], transform_matrix, center_xy
-        )
-        inputs["polygons"][mask] = 0.0
-
-        # line_strings
-        mask = torch.sum(torch.ne(inputs["line_strings"], 0), dim=-1) == 0
-        inputs["line_strings"][..., :2] = vector_transform(
-            inputs["line_strings"][..., :2], transform_matrix, center_xy
-        )
-        inputs["line_strings"][mask] = 0.0
-
-        # static objects xy
-        mask = torch.sum(torch.ne(inputs["static_objects"][..., :10], 0), dim=-1) == 0
-        inputs["static_objects"][..., :2] = vector_transform(
-            inputs["static_objects"][..., :2], transform_matrix, center_xy
-        )
-        # static objects cos sin
-        inputs["static_objects"][..., 2:4] = vector_transform(
-            inputs["static_objects"][..., 2:4], transform_matrix
-        )
-        inputs["static_objects"][mask] = 0.0
-
-        return inputs, ego_future, neighbors_future
-
-    def interpolation_future_trajectory(self, aug_current_state, ego_future, keep_remaining=True):
-        """
-        refine future trajectory with quintic Hermite interpolation
-
-        Args:
-            aug_current_state: (B, 16) current state of the ego vehicle after augmentation
-            ego_future:        (B, T, 3) future trajectory of the ego vehicle
-            keep_remaining:    If True, keep the remaining trajectory after P frames (default: True)
-
-        Returns:
-            ego_future: refined future trajectory of the ego vehicle
-        """
-
-        P = self.num_refine
-        dt = self.time_interval
-        if P < 2 or P >= ego_future.shape[1]:
-            raise ValueError(
-                f"num_refine must satisfy 2 <= num_refine < future_len; "
-                f"got num_refine={P}, future_len={ego_future.shape[1]}"
+            acceleration = cos_h * ux + sin_h * uy
+            lateral_command = -sin_h * ux + cos_h * uy
+            steering = np.arctan2(
+                wheel_base * lateral_command, linearization_speed * linearization_speed
             )
 
-        B = aug_current_state.shape[0]
-        M_t = self.t_matrix.unsqueeze(0).expand(B, -1, -1)
-        A = self.coeff_matrix.unsqueeze(0).expand(B, -1, -1)
-
-        # state: [x, y, heading, velocity, acceleration, yaw_rate]
-
-        x0, y0, theta0, v0, a0, omega0 = (
-            aug_current_state[:, 0],
-            aug_current_state[:, 1],
-            torch.atan2(
-                (ego_future[:, int(P / 2), 1] - aug_current_state[:, 1]),
-                (ego_future[:, int(P / 2), 0] - aug_current_state[:, 0]),
-            ),
-            torch.norm(aug_current_state[:, 4:6], dim=-1),
-            torch.norm(aug_current_state[:, 6:8], dim=-1),
-            aug_current_state[:, 9],
-        )
-
-        xT, yT, thetaT, vT, aT, omegaT = (
-            ego_future[:, P, 0],
-            ego_future[:, P, 1],
-            ego_future[:, P, 2],
-            torch.norm(ego_future[:, P, :2] - ego_future[:, P - 1, :2], dim=-1) / dt,
-            torch.norm(
-                ego_future[:, P, :2] - 2 * ego_future[:, P - 1, :2] + ego_future[:, P - 2, :2],
-                dim=-1,
+            x, y, theta, v = self._integrate_bicycle_accel_steering_step(
+                x, y, theta, v, acceleration, steering, wheel_base, dt
             )
-            / dt**2,
-            self.normalize_angle(ego_future[:, P, 2] - ego_future[:, P - 1, 2]) / dt,
+
+            out[t, 0] = x
+            out[t, 1] = y
+            out[t, 2] = theta
+
+        return out
+
+    def _reference_states(
+        self, original: np.ndarray, current_state: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        cfg = self.config
+        dt = cfg.time_interval
+        current_xy = np.asarray(current_state[:2], dtype=np.float64)
+        positions = np.vstack([current_xy[None], original[:, :2].astype(np.float64)])
+
+        velocity = np.gradient(positions, dt, axis=0, edge_order=1)
+        acceleration = np.gradient(velocity, dt, axis=0, edge_order=1)
+
+        return positions[:-1], velocity[:-1], acceleration[:-1]
+
+    def _ego_wheel_base(self, data: dict[str, np.ndarray]) -> float:
+        ego_shape = data.get("ego_shape")
+        if ego_shape is None or ego_shape.size == 0:
+            return self.config.default_wheel_base
+        return max(0.1, float(np.asarray(ego_shape).reshape(-1)[0]))
+
+    @staticmethod
+    def _future_trajectory_length(data: dict[str, np.ndarray]) -> float:
+        if "ego_agent_future" not in data:
+            return 0.0
+        future = data["ego_agent_future"].reshape(-1, data["ego_agent_future"].shape[-1])
+        if future.shape[0] < 2:
+            return 0.0
+        diffs = np.diff(future[:, :2].astype(np.float64), axis=0)
+        return float(np.sum(np.linalg.norm(diffs, axis=1)))
+
+    def _transform_scene_to_new_ego_frame(
+        self, data: dict[str, np.ndarray], perturbation: EgoPerturbation
+    ) -> None:
+        origin = np.array([perturbation.x, perturbation.y], dtype=np.float32)
+        yaw = perturbation.yaw
+
+        self._transform_xy_heading_angle(data, "ego_agent_future", origin, yaw, use_mask=False)
+        self._transform_xy_heading_angle(data, "neighbor_agents_future", origin, yaw, use_mask=True)
+        self._transform_xy_heading_angle(data, "goal_pose", origin, yaw, use_mask=True)
+
+        self._transform_xy_heading_cossin(
+            data, "neighbor_agents_past", origin, yaw, rotate_velocity=True
+        )
+        self._transform_xy_heading_cossin(
+            data, "static_objects", origin, yaw, rotate_velocity=False
         )
 
-        # Boundary conditions
-        sx = torch.stack(
-            [
-                x0,
-                v0 * torch.cos(theta0),
-                a0 * torch.cos(theta0) - v0 * torch.sin(theta0) * omega0,
-                xT,
-                vT * torch.cos(thetaT),
-                aT * torch.cos(thetaT) - vT * torch.sin(thetaT) * omegaT,
-            ],
-            dim=-1,
-        )
+        self._transform_lane_like(data, "lanes", origin, yaw)
+        self._transform_lane_like(data, "route_lanes", origin, yaw)
+        self._transform_points_only(data, "polygons", origin, yaw)
+        self._transform_points_only(data, "line_strings", origin, yaw)
 
-        sy = torch.stack(
-            [
-                y0,
-                v0 * torch.sin(theta0),
-                a0 * torch.sin(theta0) + v0 * torch.cos(theta0) * omega0,
-                yT,
-                vT * torch.sin(thetaT),
-                aT * torch.sin(thetaT) + vT * torch.cos(thetaT) * omegaT,
-            ],
-            dim=-1,
-        )
+    def _reset_ego_current_state(
+        self, data: dict[str, np.ndarray], perturbation: EgoPerturbation
+    ) -> None:
+        state = data["ego_current_state"]
+        state[0] = 0.0
+        state[1] = 0.0
+        state[2] = 1.0
+        state[3] = 0.0
 
-        ax = A @ sx[:, :, None]  # B, 6, 1
-        ay = A @ sy[:, :, None]  # B, 6, 1
-
-        traj_x = M_t @ ax
-        traj_y = M_t @ ay
-        traj_heading = torch.cat(
-            [
-                torch.atan2(
-                    traj_y[:, :1, 0] - y0.unsqueeze(-1), traj_x[:, :1, 0] - x0.unsqueeze(-1)
-                ),
-                torch.atan2(
-                    traj_y[:, 1:, 0] - traj_y[:, :-1, 0], traj_x[:, 1:, 0] - traj_x[:, :-1, 0]
-                ),
-            ],
-            dim=1,
-        )
-
-        interpolated = torch.cat([traj_x, traj_y, traj_heading[..., None]], axis=-1)
-
-        if keep_remaining and ego_future.shape[1] > P:
-            return torch.concatenate([interpolated, ego_future[:, P:, :]], axis=1)
+    def _transform_xy_heading_angle(
+        self,
+        data: dict[str, np.ndarray],
+        key: str,
+        origin: np.ndarray,
+        yaw: float,
+        use_mask: bool,
+    ) -> None:
+        value = data.get(key)
+        if value is None or value.shape[-1] < 3:
+            return
+        if use_mask:
+            mask = _valid_xy(value)
+            value[..., :2][mask] = self._transform_points(value[..., :2][mask], origin, yaw)
+            value[..., 2][mask] = _wrap_angle(value[..., 2][mask] - yaw)
         else:
-            return interpolated
+            value[..., :2] = self._transform_points(value[..., :2], origin, yaw)
+            value[..., 2] = _wrap_angle(value[..., 2] - yaw)
+
+    def _transform_xy_heading_cossin(
+        self,
+        data: dict[str, np.ndarray],
+        key: str,
+        origin: np.ndarray,
+        yaw: float,
+        rotate_velocity: bool,
+    ) -> None:
+        value = data.get(key)
+        if value is None or value.shape[-1] < 4:
+            return
+        mask = _valid_xy(value)
+        value[..., :2][mask] = self._transform_points(value[..., :2][mask], origin, yaw)
+
+        heading = np.arctan2(value[..., 3][mask], value[..., 2][mask]) - yaw
+        value[..., 2][mask] = np.cos(heading)
+        value[..., 3][mask] = np.sin(heading)
+
+        if rotate_velocity and value.shape[-1] >= 6:
+            value[..., 4:6][mask] = self._rotate_vectors(value[..., 4:6][mask], yaw)
+
+    def _transform_lane_like(
+        self, data: dict[str, np.ndarray], key: str, origin: np.ndarray, yaw: float
+    ) -> None:
+        value = data.get(key)
+        if value is None or value.shape[-1] < 2:
+            return
+
+        mask = _valid_xy(value)
+        value[..., :2][mask] = self._transform_points(value[..., :2][mask], origin, yaw)
+
+        for start in (2, 4, 6):
+            end = start + 2
+            if value.shape[-1] >= end:
+                value[..., start:end][mask] = self._rotate_vectors(value[..., start:end][mask], yaw)
+
+    def _transform_points_only(
+        self, data: dict[str, np.ndarray], key: str, origin: np.ndarray, yaw: float
+    ) -> None:
+        value = data.get(key)
+        if value is None or value.shape[-1] < 2:
+            return
+        mask = _valid_xy(value)
+        value[..., :2][mask] = self._transform_points(value[..., :2][mask], origin, yaw)
+
+    @staticmethod
+    def _transform_points(points: np.ndarray, origin: np.ndarray, yaw: float) -> np.ndarray:
+        return StatePerturbation._rotate_vectors(points - origin.astype(points.dtype), yaw)
+
+    @staticmethod
+    def _rotate_vectors(vectors: np.ndarray, yaw: float) -> np.ndarray:
+        c = np.cos(yaw)
+        s = np.sin(yaw)
+        x = vectors[..., 0].copy()
+        y = vectors[..., 1].copy()
+        out = np.empty_like(vectors)
+        out[..., 0] = c * x + s * y
+        out[..., 1] = -s * x + c * y
+        return out

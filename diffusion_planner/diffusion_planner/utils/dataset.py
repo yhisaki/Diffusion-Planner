@@ -5,10 +5,11 @@ from diffusion_planner.utils.train_utils import openjson
 
 
 class DiffusionPlannerData(Dataset):
-    def __init__(self, data_list):
+    def __init__(self, data_list, data_augmentation=None):
         data = openjson(data_list)
         # Accept both legacy list format and sampling.py dict format {"seed": ..., "files": [...]}
         self.data_list = data["files"] if isinstance(data, dict) else data
+        self.data_augmentation = data_augmentation
 
     def __len__(self):
         return len(self.data_list)
@@ -16,4 +17,6 @@ class DiffusionPlannerData(Dataset):
     def __getitem__(self, idx):
         data = np.load(self.data_list[idx], allow_pickle=True)
         data = dict(data)  # npz to dict
+        if self.data_augmentation is not None:
+            data = self.data_augmentation(data)
         return data
