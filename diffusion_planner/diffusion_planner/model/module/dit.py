@@ -193,9 +193,10 @@ class DiT(nn.Module):
         mask = invalid_agent_mask[:, None, :].expand(B, agent_num, agent_num).clone()
         mask[:, 1:, 0] = True
 
+        index = torch.arange(agent_num, device=device)
+        self_only_mask = index.view(1, agent_num, 1) != index.view(1, 1, agent_num)
         invalid_query_mask = invalid_agent_mask[:, :, None]
-        self_only_mask = ~torch.eye(agent_num, dtype=torch.bool, device=device).unsqueeze(0)
-        mask = torch.where(invalid_query_mask, self_only_mask, mask)
+        mask = (mask & ~invalid_query_mask) | (self_only_mask & invalid_query_mask)
 
         return mask.repeat_interleave(self.heads, dim=0)
 
