@@ -34,7 +34,7 @@ class StatePerturbationConfig:
     lateral_offset_std: float = 1.5
     yaw_std: float = 0.05
     default_wheel_base: float = 3.0
-    speed_scale_std: float = 0.15
+    speed_scale_std: float = 0.5
 
 
 class StatePerturbation:
@@ -58,7 +58,7 @@ class StatePerturbation:
         lateral_offset_std: float = 1.5,
         yaw_std: float = 0.05,
         default_wheel_base: float = 3.0,
-        speed_scale_std: float = 0.15,
+        speed_scale_std: float = 0.5,
     ) -> None:
         self.config = StatePerturbationConfig(
             augment_prob=augment_prob,
@@ -98,7 +98,7 @@ class StatePerturbation:
         cfg = self.config
         cfg.lateral_offset_std *= std_scale
         cfg.yaw_std *= std_scale
-        
+
         augmented = {
             key: np.array(value, copy=True) if isinstance(value, np.ndarray) else value
             for key, value in data.items()
@@ -143,7 +143,7 @@ class StatePerturbation:
         x = 0.0
         y = float(np.random.normal(0.0, cfg.lateral_offset_std))
         theta = float(np.random.normal(0.0, cfg.yaw_std))
-        speed_scale = float(np.random.normal(1.0, cfg.speed_scale_std))
+        speed_scale = max(0.0, float(np.random.normal(1.0, cfg.speed_scale_std)))
         current_speed = max(0.0, float(np.linalg.norm(current_state[4:6])))
         speed = current_speed * speed_scale
         return EgoPerturbation(float(x), float(y), float(theta), float(speed), float(speed_scale))
