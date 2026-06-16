@@ -110,6 +110,7 @@ def get_args():
 
     # Model
     parser.add_argument("--encoder_mixer_depth", type=int, default=6)
+    parser.add_argument("--encoder_neighbor_attention_depth", type=int, default=3)
     parser.add_argument("--encoder_fusion_depth", type=int, default=6)
     parser.add_argument("--decoder_depth", type=int, help="number of decoding layers", default=3)
     parser.add_argument("--num_heads", type=int, help="number of multi-head", default=8)
@@ -269,12 +270,14 @@ def model_training(args):
     if not trainable_parameters:
         raise RuntimeError("No trainable parameters found")
 
-    optimizer = optim.AdamW([
-        {
-            "params": trainable_parameters,
-            "lr": args.learning_rate,
-        }
-    ])
+    optimizer = optim.AdamW(
+        [
+            {
+                "params": trainable_parameters,
+                "lr": args.learning_rate,
+            }
+        ]
+    )
 
     if args.use_ema:
         model_ema = ModelEma(

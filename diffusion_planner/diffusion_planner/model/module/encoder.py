@@ -91,7 +91,7 @@ class Encoder(nn.Module):
             config.time_len,
             hidden_dim=config.hidden_dim,
             drop_path_rate=config.encoder_drop_path_rate,
-            depth=config.encoder_mixer_depth,
+            depth=config.encoder_neighbor_attention_depth,
             num_heads=config.num_heads,
         )
         self.static_encoder = StaticEncoder(
@@ -151,7 +151,7 @@ class Encoder(nn.Module):
             hidden_dim=config.hidden_dim,
             num_heads=config.num_heads,
             drop_path_rate=config.encoder_drop_path_rate,
-            depth=config.encoder_mixer_depth,
+            depth=config.encoder_fusion_depth,
         )
 
         self._init_parameters()
@@ -348,18 +348,20 @@ class EgoVelocityHistoryEncoder(nn.Module):
         self.time_embedding = nn.Embedding(time_len, hidden_dim)
         self.cls_token = nn.Parameter(torch.zeros(1, 1, hidden_dim))
 
-        self.transformer_blocks = nn.ModuleList([
-            nn.TransformerEncoderLayer(
-                d_model=hidden_dim,
-                nhead=num_heads,
-                dim_feedforward=hidden_dim * 4,
-                dropout=0.0,
-                activation="gelu",
-                batch_first=True,
-                norm_first=True,
-            )
-            for _ in range(num_layers)
-        ])
+        self.transformer_blocks = nn.ModuleList(
+            [
+                nn.TransformerEncoderLayer(
+                    d_model=hidden_dim,
+                    nhead=num_heads,
+                    dim_feedforward=hidden_dim * 4,
+                    dropout=0.0,
+                    activation="gelu",
+                    batch_first=True,
+                    norm_first=True,
+                )
+                for _ in range(num_layers)
+            ]
+        )
 
         self.speed_projection = Mlp(
             in_features=1,
@@ -448,28 +450,29 @@ class NeighborEncoder(nn.Module):
 
         self._hidden_dim = hidden_dim
 
-        self.input_projection = nn.Linear(
+        self.input_projection = Mlp(
             in_features=8 + 1,
+            hidden_features=hidden_dim,
             out_features=hidden_dim,
+            act_layer=nn.GELU,
+            drop=drop_path_rate,
         )
         self.time_embedding = nn.Embedding(time_len, hidden_dim)
-        self.query = nn.Parameter(torch.zeros(1, 1, hidden_dim))
-        self.attention = nn.MultiheadAttention(
-            embed_dim=hidden_dim,
-            num_heads=num_heads,
-            dropout=drop_path_rate,
-            batch_first=True,
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, hidden_dim))
+        self.transformer_blocks = nn.ModuleList(
+            [
+                nn.TransformerEncoderLayer(
+                    d_model=hidden_dim,
+                    nhead=num_heads,
+                    dim_feedforward=hidden_dim * 4,
+                    dropout=drop_path_rate,
+                    activation="gelu",
+                    batch_first=True,
+                    norm_first=True,
+                )
+                for _ in range(depth)
+            ]
         )
-        self.blocks = nn.ModuleList([
-            Mlp(
-                in_features=hidden_dim,
-                hidden_features=hidden_dim,
-                out_features=hidden_dim,
-                act_layer=nn.GELU,
-                drop=drop_path_rate,
-            )
-            for _ in range(depth)
-        ])
 
         self.norm = nn.LayerNorm(hidden_dim)
         self.emb_project = Mlp(
@@ -479,6 +482,105 @@ class NeighborEncoder(nn.Module):
             act_layer=nn.GELU,
             drop=drop_path_rate,
         )
+
+    def _compute_valid_masks(
+        self, neighbor_history: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            neighbor_history: Raw neighbor histories, shape (B, P, V, 11).
+
+        Returns:
+            history_step_invalid_mask: (B, P, V), True for invalid history steps
+            neighbor_invalid_mask: (B, P), True for empty neighbor slots
+        """
+        B, P, V, _ = neighbor_history.shape
+
+        # state: neighbor kinematic/shape fields used for validity checks.
+        state = neighbor_history[..., :8]
+        # zero_step_invalid_mask: steps whose state fields are all zero padding.
+        zero_step_invalid_mask = torch.sum(torch.ne(state, 0), dim=-1) == 0
+        # neighbor_invalid_mask: neighbor slots with no non-zero history step.
+        neighbor_invalid_mask = torch.all(zero_step_invalid_mask, dim=-1)
+
+        # consecutive_diff: transitions where the next state differs from the current state.
+        consecutive_diff = torch.any(state[:, :, 1:] != state[:, :, :-1], dim=-1)
+        # has_change: neighbor slots with at least one state transition.
+        has_change = torch.any(consecutive_diff, dim=-1)
+        # first_change_index: index before the first changed state, used as valid start.
+        first_change_index = torch.argmax(consecutive_diff.to(torch.long), dim=-1)
+        # last_step_index: fallback valid start when all states are repeated.
+        last_step_index = torch.full(
+            (B, P), V - 1, dtype=torch.long, device=neighbor_history.device
+        )
+        # valid_start_index: first valid timestep after repeated padding.
+        valid_start_index = torch.where(has_change, first_change_index, last_step_index)
+        # timestep_index: broadcastable index for each history step.
+        timestep_index = torch.arange(V, device=neighbor_history.device).view(1, 1, V)
+        # repeated_padding_mask: repeated prefix before the first valid timestep.
+        repeated_padding_mask = timestep_index < valid_start_index.unsqueeze(-1)
+        # history_step_invalid_mask: final per-step mask used by attention.
+        history_step_invalid_mask = (
+            zero_step_invalid_mask | repeated_padding_mask | neighbor_invalid_mask.unsqueeze(-1)
+        )
+
+        return history_step_invalid_mask, neighbor_invalid_mask
+
+    def _latest_neighbor_position(self, neighbor_history: torch.Tensor) -> torch.Tensor:
+        # latest_neighbor_state: latest valid state, stored at the final timestep.
+        latest_neighbor_state = neighbor_history[:, :, -1, :]
+
+        # neighbor_type: one-hot neighbor class, vehicle/pedestrian/bicycle.
+        neighbor_type = latest_neighbor_state[..., 8:]
+        # pos: x, y, cos, sin plus class type for positional embedding.
+        pos = latest_neighbor_state[..., :4].clone()  # x, y, cos, sin
+
+        return add_neighbor_class_type(pos, neighbor_type)
+
+    def _encode_history(
+        self,
+        neighbor_history: torch.Tensor,
+        history_step_invalid_mask: torch.Tensor,
+        neighbor_invalid_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        B, P, V, _ = neighbor_history.shape
+
+        # x: model input fields plus a valid-step flag.
+        x = neighbor_history[..., :8]
+        x = torch.cat([x, (~history_step_invalid_mask).float().unsqueeze(-1)], dim=-1)
+        x = x.view(B * P, V, -1)
+        # x: remove velocity components while keeping tensor layout expected by projection.
+        x = torch.cat([x[..., :4], torch.zeros_like(x[..., 4:6]), x[..., 6:]], dim=-1)
+
+        # valid_slot_mask: flattened neighbor slots that contain at least one valid step.
+        valid_slot_mask = ~neighbor_invalid_mask.view(-1)
+        # history_step_invalid_mask: flattened per-step key padding mask.
+        history_step_invalid_mask = history_step_invalid_mask.view(B * P, V)
+
+        x = self.input_projection(x)
+        # timestep: history-step indices used for time embeddings.
+        timestep = torch.arange(V, device=neighbor_history.device)
+        x = x + self.time_embedding(timestep).unsqueeze(0)
+
+        # cls_tokens: learned sequence summary token prepended to each neighbor history.
+        cls_tokens = self.cls_token.expand(B * P, -1, -1)
+        x = torch.cat([cls_tokens, x], dim=1)
+
+        # cls_mask: CLS token is always visible to the Transformer.
+        cls_mask = torch.zeros((B * P, 1), dtype=torch.bool, device=neighbor_history.device)
+        # transformer_padding_mask: invalid history steps, with CLS mask prepended.
+        transformer_padding_mask = torch.cat([cls_mask, history_step_invalid_mask], dim=1)
+
+        for block in self.transformer_blocks:
+            x = block(x, src_key_padding_mask=transformer_padding_mask)
+
+        # x: CLS token output used as the neighbor history embedding.
+        x = x[:, 0, :]
+
+        x = self.emb_project(self.norm(x))
+        x_result = x * valid_slot_mask.float().unsqueeze(-1)
+
+        return x_result.view(B, P, -1)
 
     def forward(self, x: torch.Tensor) -> EncoderOutput:
         """
@@ -492,87 +594,17 @@ class NeighborEncoder(nn.Module):
             mask: (B, P), True when every timestep for that neighbor is empty
             pos: (B, P, 4 + CLASS_TYPE_NUM), latest neighbor pose plus class type
         """
-        B, P, V, _ = x.shape
-        raw_neighbor_history = x
-        zero_step_invalid_mask = torch.sum(torch.ne(raw_neighbor_history[..., :8], 0), dim=-1) == 0
-        neighbor_invalid_mask = torch.all(zero_step_invalid_mask, dim=-1)
+        B, P, _, _ = x.shape
 
-        consecutive_diff = torch.any(
-            raw_neighbor_history[:, :, 1:, :8] != raw_neighbor_history[:, :, :-1, :8],
-            dim=-1,
-        )
-        has_changed_before_or_at = torch.cat(
-            [
-                torch.zeros((B, P, 1), dtype=torch.bool, device=x.device),
-                torch.cumsum(consecutive_diff.to(torch.int), dim=-1).to(torch.bool),
-            ],
-            dim=-1,
-        )
-        has_future_change = torch.flip(
-            torch.cumsum(torch.flip(consecutive_diff.to(torch.int), dims=[-1]), dim=-1),
-            dims=[-1],
-        ).to(torch.bool)
-        same_as_next = torch.cat(
-            [
-                ~consecutive_diff,
-                torch.zeros((B, P, 1), dtype=torch.bool, device=x.device),
-            ],
-            dim=-1,
-        )
-        leading_repeated_padding_mask = (
-            torch.cat(
-                [has_future_change, torch.zeros((B, P, 1), dtype=torch.bool, device=x.device)],
-                dim=-1,
-            )
-            & ~has_changed_before_or_at
-            & same_as_next
-        )
-        history_step_invalid_mask = zero_step_invalid_mask | leading_repeated_padding_mask
-        valid_step_mask = ~history_step_invalid_mask
+        # history_step_invalid_mask: invalid/padded timesteps for each neighbor history.
+        # neighbor_invalid_mask: invalid/padded neighbor slots.
+        history_step_invalid_mask, neighbor_invalid_mask = self._compute_valid_masks(x)
+        # pos: latest valid neighbor pose with neighbor class type.
+        pos = self._latest_neighbor_position(x)
+        # encoding: neighbor history embedding produced by the attention/MLP model.
+        encoding = self._encode_history(x, history_step_invalid_mask, neighbor_invalid_mask)
 
-        timestep_index = torch.arange(V, device=x.device).view(1, 1, V)
-        latest_valid_index = torch.where(
-            valid_step_mask,
-            timestep_index,
-            torch.zeros_like(timestep_index),
-        ).amax(dim=-1)
-        gather_index = latest_valid_index.view(B, P, 1, 1).expand(-1, -1, 1, x.shape[-1])
-        latest_neighbor_state = x.gather(dim=2, index=gather_index).squeeze(2)
-
-        neighbor_type = latest_neighbor_state[..., 8:]
-        pos = latest_neighbor_state[..., :4].clone()  # x, y, cos, sin
-        pos = add_neighbor_class_type(pos, neighbor_type)
-
-        x = x[..., :8]
-        x = torch.cat([x, (~history_step_invalid_mask).float().unsqueeze(-1)], dim=-1)
-        x = x.view(B * P, V, -1)
-        x = torch.cat([x[..., :4], torch.zeros_like(x[..., 4:6]), x[..., 6:]], dim=-1)
-
-        valid_slot_mask = ~neighbor_invalid_mask.view(-1)
-        history_step_invalid_mask = history_step_invalid_mask.view(B * P, V)
-
-        x = self.input_projection(x)
-        timestep = torch.arange(V, device=x.device)
-        x = x + self.time_embedding(timestep).unsqueeze(0)
-
-        safe_history_step_invalid_mask = valid_slot_mask.unsqueeze(-1) & history_step_invalid_mask
-        query = self.query.expand(B * P, -1, -1)
-        x, _ = self.attention(
-            query=query,
-            key=x,
-            value=x,
-            key_padding_mask=safe_history_step_invalid_mask,
-            need_weights=False,
-        )
-        x = x.squeeze(1)
-
-        for block in self.blocks:
-            x = x + block(x)
-
-        x = self.emb_project(self.norm(x))
-        x_result = x * valid_slot_mask.float().unsqueeze(-1)
-
-        return x_result.view(B, P, -1), neighbor_invalid_mask.reshape(B, -1), pos.view(B, P, -1)
+        return encoding, neighbor_invalid_mask.reshape(B, P), pos.view(B, P, -1)
 
 
 class StaticEncoder(nn.Module):
@@ -655,9 +687,9 @@ class LaneEncoder(nn.Module):
             drop=0.0,
         )
 
-        self.blocks = nn.ModuleList([
-            MixerBlock(tokens_mlp_dim, channels_mlp_dim, drop_path_rate) for i in range(depth)
-        ])
+        self.blocks = nn.ModuleList(
+            [MixerBlock(tokens_mlp_dim, channels_mlp_dim, drop_path_rate) for i in range(depth)]
+        )
 
         self.norm = nn.LayerNorm(channels_mlp_dim)
         self.emb_project = Mlp(
@@ -816,9 +848,9 @@ class LineEncoder(nn.Module):
             drop=0.0,
         )
 
-        self.blocks = nn.ModuleList([
-            MixerBlock(tokens_mlp_dim, channels_mlp_dim, drop_path_rate) for i in range(depth)
-        ])
+        self.blocks = nn.ModuleList(
+            [MixerBlock(tokens_mlp_dim, channels_mlp_dim, drop_path_rate) for i in range(depth)]
+        )
 
         self.norm = nn.LayerNorm(channels_mlp_dim)
         self.emb_project = Mlp(
@@ -1002,9 +1034,9 @@ class Fusion(nn.Module):
         depth: int,
     ) -> None:
         super().__init__()
-        self.blocks = nn.ModuleList([
-            FusionBlock(hidden_dim, num_heads, drop_path_rate) for _ in range(depth)
-        ])
+        self.blocks = nn.ModuleList(
+            [FusionBlock(hidden_dim, num_heads, drop_path_rate) for _ in range(depth)]
+        )
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """
