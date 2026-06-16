@@ -65,6 +65,75 @@ def _traffic_light_color(tl: np.ndarray) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _valid_xy_mask(points: np.ndarray) -> np.ndarray:
+    return ~((points[..., 0] == 0) & (points[..., 1] == 0))
+
+
+def _ego_marker_pose(data: dict[str, np.ndarray], marker_step: int) -> tuple[float, float, float, str] | None:
+    if marker_step <= 0:
+        return None
+
+    cursor = marker_step - 1
+    if "ego_agent_future" not in data:
+        return None
+
+    future = data["ego_agent_future"].reshape(-1, data["ego_agent_future"].shape[-1])
+    if cursor >= len(future):
+        return None
+
+    state = future[cursor]
+    heading = float(state[2]) if future.shape[1] >= 3 else 0.0
+    return float(state[0]), float(state[1]), heading, f"future[{cursor}]"
+
+
+def _draw_ego_marker(data: dict[str, np.ndarray], marker_step: int) -> list[go.Scatter]:
+    pose = _ego_marker_pose(data, marker_step)
+    if pose is None:
+        return []
+
+    x, y, heading, label = pose
+    ego_shape = data["ego_shape"].reshape(-1)
+    wheelbase = float(ego_shape[0])
+    car_length = float(ego_shape[1])
+    car_width = float(ego_shape[2])
+    cos_h = float(np.cos(heading))
+    sin_h = float(np.sin(heading))
+    cx = x + (wheelbase / 2) * cos_h
+    cy = y + (wheelbase / 2) * sin_h
+    bx, by = [], []
+    for dx_frac, dy_frac in [
+        (-0.5, -0.5),
+        (0.5, -0.5),
+        (0.5, 0.5),
+        (-0.5, 0.5),
+        (-0.5, -0.5),
+    ]:
+        dx = car_length * dx_frac
+        dy = car_width * dy_frac
+        bx.append(dx * cos_h - dy * sin_h + cx)
+        by.append(dx * sin_h + dy * cos_h + cy)
+
+    return [
+        go.Scatter(
+            x=bx,
+            y=by,
+            mode="lines",
+            line=dict(color="darkviolet", width=2),
+            fill="toself",
+            fillcolor="rgba(148,0,211,0.25)",
+            name=f"marker {label}",
+            showlegend=True,
+        ),
+        go.Scatter(
+            x=[x],
+            y=[y],
+            mode="markers",
+            marker=dict(size=8, color="darkviolet", symbol="x"),
+            showlegend=False,
+        ),
+    ]
+
+
 def _draw_ego_vehicle(data: dict[str, np.ndarray]) -> list[go.Scatter]:
     """Draw ego vehicle, past and future trajectories."""
     traces: list[go.Scatter] = []
@@ -101,38 +170,64 @@ def _draw_ego_vehicle(data: dict[str, np.ndarray]) -> list[go.Scatter]:
 
     if "ego_agent_past" in data:
         past = data["ego_agent_past"].reshape(-1, data["ego_agent_past"].shape[-1])
-        valid = ~((past[:, 0] == 0) & (past[:, 1] == 0))
-        if np.any(valid):
-            traces.append(
-                go.Scatter(
-                    x=past[valid, 0],
-                    y=past[valid, 1],
-                    mode="lines+markers",
-                    line=dict(color="orange", width=2, dash="dash"),
-                    marker=dict(size=3),
-                    name="Ego Past",
-                    showlegend=True,
-                )
+        traces.append(
+            go.Scatter(
+                x=past[:, 0],
+                y=past[:, 1],
+                mode="lines+markers",
+                line=dict(color="orange", width=2, dash="dash"),
+                marker=dict(size=3),
+                name="Ego Past",
+                showlegend=True,
             )
+        )
+
+    if "original_ego_agent_past_in_augmented_frame" in data:
+        original_past = data["original_ego_agent_past_in_augmented_frame"].reshape(
+            -1, data["original_ego_agent_past_in_augmented_frame"].shape[-1]
+        )
+        traces.append(
+            go.Scatter(
+                x=original_past[:, 0],
+                y=original_past[:, 1],
+                mode="lines",
+                line=dict(color="rgba(80,80,80,0.8)", width=1, dash="dot"),
+                name="Original Past in Aug Frame",
+                showlegend=True,
+            )
+        )
 
     if "ego_agent_future" in data:
         future = data["ego_agent_future"].reshape(-1, data["ego_agent_future"].shape[-1])
-        valid = ~((future[:, 0] == 0) & (future[:, 1] == 0))
-        if np.any(valid):
-            vf = future[valid]
-            t_vals = np.linspace(0, 1, len(vf))
-            colors_str = [f"rgb({int(255 * t)},{0},{int(255 * (1 - t))})" for t in t_vals]
-            traces.append(
-                go.Scatter(
-                    x=vf[:, 0],
-                    y=vf[:, 1],
-                    mode="lines+markers",
-                    line=dict(color="purple", width=2),
-                    marker=dict(size=4, color=colors_str),
-                    name="Ego Future (GT)",
-                    showlegend=True,
-                )
+        t_vals = np.linspace(0, 1, len(future))
+        colors_str = [f"rgb({int(255 * t)},{0},{int(255 * (1 - t))})" for t in t_vals]
+        traces.append(
+            go.Scatter(
+                x=future[:, 0],
+                y=future[:, 1],
+                mode="lines+markers",
+                line=dict(color="purple", width=2),
+                marker=dict(size=4, color=colors_str),
+                name="Ego Future (GT)",
+                showlegend=True,
             )
+        )
+
+    if "original_ego_agent_future_in_augmented_frame" in data:
+        original_future = data["original_ego_agent_future_in_augmented_frame"].reshape(
+            -1, data["original_ego_agent_future_in_augmented_frame"].shape[-1]
+        )
+        traces.append(
+            go.Scatter(
+                x=original_future[:, 0],
+                y=original_future[:, 1],
+                mode="lines+markers",
+                line=dict(color="black", width=1, dash="dot"),
+                marker=dict(size=3, color="black", symbol="circle-open"),
+                name="Original Future in Aug Frame",
+                showlegend=True,
+            )
+        )
 
     return traces
 
@@ -151,7 +246,6 @@ def _draw_neighbor_agents(data: dict[str, np.ndarray]) -> list[go.Scatter]:
         neighbor = neighbors[i, last_t]
         if np.sum(np.abs(neighbor[:4])) < 1e-6:
             continue
-
         n_x, n_y = float(neighbor[0]), float(neighbor[1])
         n_cos, n_sin = float(neighbor[2]), float(neighbor[3])
         vel_x, vel_y = float(neighbor[4]), float(neighbor[5])
@@ -161,12 +255,12 @@ def _draw_neighbor_agents(data: dict[str, np.ndarray]) -> list[go.Scatter]:
         color = ["blue", "green", "purple"][vehicle_type] if vehicle_type < 3 else "blue"
 
         past_pts = neighbors[i, :, :2]
-        valid_past = ~((past_pts[:, 0] == 0) & (past_pts[:, 1] == 0))
-        if np.any(valid_past):
+        past_mask = _valid_xy_mask(past_pts)
+        if np.any(past_mask):
             traces.append(
                 go.Scatter(
-                    x=past_pts[valid_past, 0],
-                    y=past_pts[valid_past, 1],
+                    x=past_pts[past_mask, 0],
+                    y=past_pts[past_mask, 1],
                     mode="lines",
                     line=dict(color=color, width=1, dash="dash"),
                     opacity=0.6,
@@ -202,12 +296,12 @@ def _draw_neighbor_agents(data: dict[str, np.ndarray]) -> list[go.Scatter]:
             )
             if i < n_future.shape[0]:
                 nf = n_future[i]
-                valid_nf = ~((nf[:, 0] == 0) & (nf[:, 1] == 0))
-                if np.any(valid_nf):
+                future_mask = _valid_xy_mask(nf)
+                if np.any(future_mask):
                     traces.append(
                         go.Scatter(
-                            x=nf[valid_nf, 0],
-                            y=nf[valid_nf, 1],
+                            x=nf[future_mask, 0],
+                            y=nf[future_mask, 1],
                             mode="lines+markers",
                             line=dict(color=color, width=1),
                             marker=dict(size=2, color=color),
@@ -237,11 +331,14 @@ def _draw_lanes(data: dict[str, np.ndarray]) -> list[go.Scatter]:
         ly = lanes[i, :, 1] + lanes[i, :, 5]
         rx = lanes[i, :, 0] + lanes[i, :, 6]
         ry = lanes[i, :, 1] + lanes[i, :, 7]
+        lane_mask = np.any(np.abs(lanes[i, :, :8]) > 1e-6, axis=-1)
+        if not np.any(lane_mask):
+            continue
 
         traces.append(
             go.Scatter(
-                x=lx,
-                y=ly,
+                x=lx[lane_mask],
+                y=ly[lane_mask],
                 mode="lines",
                 line=dict(color=color, width=1),
                 opacity=0.25,
@@ -250,8 +347,8 @@ def _draw_lanes(data: dict[str, np.ndarray]) -> list[go.Scatter]:
         )
         traces.append(
             go.Scatter(
-                x=rx,
-                y=ry,
+                x=rx[lane_mask],
+                y=ry[lane_mask],
                 mode="lines",
                 line=dict(color=color, width=1),
                 opacity=0.25,
@@ -273,12 +370,12 @@ def _draw_route(data: dict[str, np.ndarray]) -> list[go.Scatter]:
         route = route.reshape(route.shape[0], route.shape[1], -1)
 
     for i in range(route.shape[0]):
-        valid = ~((route[i, :, 0] == 0) & (route[i, :, 1] == 0))
-        if np.any(valid):
+        route_mask = _valid_xy_mask(route[i])
+        if np.any(route_mask):
             traces.append(
                 go.Scatter(
-                    x=route[i, valid, 0],
-                    y=route[i, valid, 1],
+                    x=route[i, route_mask, 0],
+                    y=route[i, route_mask, 1],
                     mode="lines",
                     line=dict(color="olive", width=2, dash="dash"),
                     opacity=0.5,
@@ -342,6 +439,8 @@ def _draw_goal_pose(data: dict[str, np.ndarray]) -> list[go.Scatter]:
         return traces
 
     goal = data["goal_pose"].reshape(-1)
+    if np.sum(np.abs(goal[:2])) < 1e-6:
+        return traces
     if len(goal) >= 4:
         gx, gy = float(goal[0]), float(goal[1])
         gcos, gsin = float(goal[2]), float(goal[3])
@@ -430,7 +529,8 @@ def plot_trajectory(
     Args:
         data: Dict of numpy arrays loaded from an NPZ file.
         view_range: Half-range for axis limits in metres.
-        time_step: Optional time step index to mark on ego future trajectory.
+        time_step: Optional unified ego timeline marker. 0 hides it; positive
+            values walk through past, current, then future.
 
     Returns:
         Plotly Figure object.
@@ -452,55 +552,9 @@ def plot_trajectory(
     for trace in _draw_goal_pose(data):
         fig.add_trace(trace)
 
-    if time_step is not None and "ego_agent_future" in data:
-        ego_state = data["ego_current_state"].reshape(-1)
-        ego_shape = data["ego_shape"].reshape(-1)
-        wheelbase = float(ego_shape[0])
-        car_length = float(ego_shape[1])
-        car_width = float(ego_shape[2])
-        future = data["ego_agent_future"].reshape(-1, data["ego_agent_future"].shape[-1])
-        if 0 <= time_step < len(future):
-            fx, fy = float(future[time_step, 0]), float(future[time_step, 1])
-            if future.shape[1] >= 3:
-                heading = float(future[time_step, 2])
-                fcos, fsin = np.cos(heading), np.sin(heading)
-            else:
-                fcos, fsin = float(ego_state[2]), float(ego_state[3])
-            cx = fx + (wheelbase / 2) * fcos
-            cy = fy + (wheelbase / 2) * fsin
-            bx, by = [], []
-            for dx_frac, dy_frac in [
-                (-0.5, -0.5),
-                (0.5, -0.5),
-                (0.5, 0.5),
-                (-0.5, 0.5),
-                (-0.5, -0.5),
-            ]:
-                dx = car_length * dx_frac
-                dy = car_width * dy_frac
-                bx.append(dx * fcos - dy * fsin + cx)
-                by.append(dx * fsin + dy * fcos + cy)
-            fig.add_trace(
-                go.Scatter(
-                    x=bx,
-                    y=by,
-                    mode="lines",
-                    line=dict(color="darkviolet", width=2),
-                    fill="toself",
-                    fillcolor="rgba(148,0,211,0.25)",
-                    name=f"t={time_step}",
-                    showlegend=True,
-                )
-            )
-            fig.add_trace(
-                go.Scatter(
-                    x=[fx],
-                    y=[fy],
-                    mode="markers",
-                    marker=dict(size=8, color="darkviolet", symbol="x"),
-                    showlegend=False,
-                )
-            )
+    if time_step is not None:
+        for trace in _draw_ego_marker(data, time_step):
+            fig.add_trace(trace)
 
     ego_state = data["ego_current_state"].reshape(-1)
     center_x = float(ego_state[0])
@@ -510,8 +564,13 @@ def plot_trajectory(
     fig.update_yaxes(
         range=[center_y - view_range, center_y + view_range], scaleanchor="x", scaleratio=1
     )
+    title = "Trajectory View"
+    if "augmentation_perturbation" in data:
+        dx, dy, dyaw = data["augmentation_perturbation"].reshape(-1)[:3]
+        title = f"Augmented Trajectory View (dx={dx:.2f}m, dy={dy:.2f}m, dyaw={dyaw:.2f}rad)"
+
     fig.update_layout(
-        title="Trajectory View",
+        title=title,
         xaxis_title="X [m]",
         yaxis_title="Y [m]",
         legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01, font=dict(size=9)),
@@ -528,15 +587,54 @@ def _past_positions(
     if "ego_agent_past" not in data:
         return None
     past = data["ego_agent_past"].reshape(-1, data["ego_agent_past"].shape[-1])
-    valid = ~((past[:, 0] == 0) & (past[:, 1] == 0))
-    if np.sum(valid) < 1:
-        return None
-    vp = past[valid]
     ego_state = data["ego_current_state"].reshape(-1)
-    positions = np.vstack([vp[:, :2], [[ego_state[0], ego_state[1]]]])
+    positions = np.vstack([past[:, :2], [[ego_state[0], ego_state[1]]]])
     n = len(positions)
     t = np.arange(-n + 1, 1)
     return t, positions
+
+
+def _past_heading_cos_sin(
+    data: dict[str, np.ndarray],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    if "ego_agent_past" not in data:
+        return None
+    past = data["ego_agent_past"].reshape(-1, data["ego_agent_past"].shape[-1])
+    ego_state = data["ego_current_state"].reshape(-1)
+    if past.shape[1] >= 4:
+        cos_vals = past[:, 2]
+        sin_vals = past[:, 3]
+    elif past.shape[1] == 3:
+        heading = past[:, 2]
+        cos_vals = np.cos(heading)
+        sin_vals = np.sin(heading)
+    else:
+        return None
+    cos_vals = np.append(cos_vals, ego_state[2])
+    sin_vals = np.append(sin_vals, ego_state[3])
+    n = len(cos_vals)
+    t = np.arange(-n + 1, 1)
+    return t, cos_vals, sin_vals
+
+
+def _future_heading_cos_sin(
+    data: dict[str, np.ndarray],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    if "ego_agent_future" not in data:
+        return None
+    ego_state = data["ego_current_state"].reshape(-1)
+    future = data["ego_agent_future"].reshape(-1, data["ego_agent_future"].shape[-1])
+    if future.shape[1] >= 4:
+        cos_vals = np.hstack([ego_state[2], future[:, 2]])
+        sin_vals = np.hstack([ego_state[3], future[:, 3]])
+    elif future.shape[1] >= 3:
+        heading = np.hstack([np.arctan2(ego_state[3], ego_state[2]), future[:, 2]])
+        cos_vals = np.cos(heading)
+        sin_vals = np.sin(heading)
+    else:
+        return None
+    t = np.arange(len(cos_vals))
+    return t, cos_vals, sin_vals
 
 
 def plot_tx(data: dict[str, np.ndarray]) -> go.Figure:
@@ -555,16 +653,13 @@ def plot_tx(data: dict[str, np.ndarray]) -> go.Figure:
     if "ego_agent_future" in data:
         ego_state = data["ego_current_state"].reshape(-1)
         future = data["ego_agent_future"].reshape(-1, data["ego_agent_future"].shape[-1])
-        valid = ~((future[:, 0] == 0) & (future[:, 1] == 0))
-        if np.any(valid):
-            vf = future[valid]
-            positions = np.vstack([[ego_state[0], ego_state[1]], vf[:, :2]])
-            t = np.arange(len(positions))
-            fig.add_trace(go.Scatter(
-                x=t, y=positions[:, 0], mode="lines+markers", name="Future X",
-                line=dict(color="black", width=2), marker=dict(size=3),
-            ))
-            has_data = True
+        positions = np.vstack([[ego_state[0], ego_state[1]], future[:, :2]])
+        t = np.arange(len(positions))
+        fig.add_trace(go.Scatter(
+            x=t, y=positions[:, 0], mode="lines+markers", name="Future X",
+            line=dict(color="black", width=2), marker=dict(size=3),
+        ))
+        has_data = True
 
     if not has_data:
         fig.update_layout(title="t-x (no data)", height=400)
@@ -597,16 +692,13 @@ def plot_ty(data: dict[str, np.ndarray]) -> go.Figure:
     if "ego_agent_future" in data:
         ego_state = data["ego_current_state"].reshape(-1)
         future = data["ego_agent_future"].reshape(-1, data["ego_agent_future"].shape[-1])
-        valid = ~((future[:, 0] == 0) & (future[:, 1] == 0))
-        if np.any(valid):
-            vf = future[valid]
-            positions = np.vstack([[ego_state[0], ego_state[1]], vf[:, :2]])
-            t = np.arange(len(positions))
-            fig.add_trace(go.Scatter(
-                x=t, y=positions[:, 1], mode="lines+markers", name="Future Y",
-                line=dict(color="black", width=2), marker=dict(size=3),
-            ))
-            has_data = True
+        positions = np.vstack([[ego_state[0], ego_state[1]], future[:, :2]])
+        t = np.arange(len(positions))
+        fig.add_trace(go.Scatter(
+            x=t, y=positions[:, 1], mode="lines+markers", name="Future Y",
+            line=dict(color="black", width=2), marker=dict(size=3),
+        ))
+        has_data = True
 
     if not has_data:
         fig.update_layout(title="t-y (no data)", height=400)
@@ -616,6 +708,111 @@ def plot_ty(data: dict[str, np.ndarray]) -> go.Figure:
         title="t-y",
         xaxis_title="Time step",
         yaxis_title="Y [m]",
+        height=400,
+        margin=dict(l=50, r=20, t=40, b=40),
+        legend=dict(font=dict(size=9)),
+    )
+    return fig
+
+
+def plot_tcos(data: dict[str, np.ndarray]) -> go.Figure:
+    fig = go.Figure()
+    has_data = False
+
+    past_result = _past_heading_cos_sin(data)
+    if past_result is not None:
+        t, cos_vals, _ = past_result
+        fig.add_trace(go.Scatter(
+            x=t, y=cos_vals, mode="lines+markers", name="Past cos",
+            line=dict(color="orange", width=2), marker=dict(size=3),
+        ))
+        has_data = True
+
+    future_result = _future_heading_cos_sin(data)
+    if future_result is not None:
+        t, cos_vals, _ = future_result
+        fig.add_trace(go.Scatter(
+            x=t, y=cos_vals, mode="lines+markers", name="Future cos",
+            line=dict(color="black", width=2), marker=dict(size=3),
+        ))
+        has_data = True
+
+    if not has_data:
+        fig.update_layout(title="t-cos (no data)", height=400)
+        return fig
+
+    fig.update_layout(
+        title="t-cos",
+        xaxis_title="Time step",
+        yaxis_title="cos(heading)",
+        height=400,
+        margin=dict(l=50, r=20, t=40, b=40),
+        legend=dict(font=dict(size=9)),
+    )
+    return fig
+
+
+def plot_tsin(data: dict[str, np.ndarray]) -> go.Figure:
+    fig = go.Figure()
+    has_data = False
+
+    past_result = _past_heading_cos_sin(data)
+    if past_result is not None:
+        t, _, sin_vals = past_result
+        fig.add_trace(go.Scatter(
+            x=t, y=sin_vals, mode="lines+markers", name="Past sin",
+            line=dict(color="orange", width=2), marker=dict(size=3),
+        ))
+        has_data = True
+
+    future_result = _future_heading_cos_sin(data)
+    if future_result is not None:
+        t, _, sin_vals = future_result
+        fig.add_trace(go.Scatter(
+            x=t, y=sin_vals, mode="lines+markers", name="Future sin",
+            line=dict(color="black", width=2), marker=dict(size=3),
+        ))
+        has_data = True
+
+    if not has_data:
+        fig.update_layout(title="t-sin (no data)", height=400)
+        return fig
+
+    fig.update_layout(
+        title="t-sin",
+        xaxis_title="Time step",
+        yaxis_title="sin(heading)",
+        height=400,
+        margin=dict(l=50, r=20, t=40, b=40),
+        legend=dict(font=dict(size=9)),
+    )
+    return fig
+
+
+def plot_tdisplacement(data: dict[str, np.ndarray]) -> go.Figure:
+    fig = go.Figure()
+    has_data = False
+
+    if "ego_agent_past" in data:
+        past = data["ego_agent_past"].reshape(-1, data["ego_agent_past"].shape[-1])
+        if past.shape[0] >= 2:
+            displacements = np.linalg.norm(np.diff(past[:, :2].astype(np.float64), axis=0), axis=1)
+            speed = displacements / 0.1
+            t = np.arange(-len(speed), 0)
+            fig.add_trace(go.Scatter(
+                x=t, y=speed, mode="lines+markers", name="Past speed",
+                line=dict(color="orange", width=2), marker=dict(size=3),
+            ))
+            has_data = True
+
+    if not has_data:
+        fig.update_layout(title="t-displacement (no data)", height=400)
+        return fig
+
+    fig.update_layout(
+        title="t-displacement",
+        xaxis_title="Time step",
+        yaxis_title="speed [m/s]",
         height=400,
         margin=dict(l=50, r=20, t=40, b=40),
         legend=dict(font=dict(size=9)),

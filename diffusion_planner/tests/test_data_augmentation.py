@@ -1,528 +1,148 @@
-# Copyright 2026 TIER IV, Inc.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-"""Unit tests for diffusion_planner/utils/data_augmentation.py.
-
-Covers:
-- vector_transform: identity, 90-deg rotation, bias, batch norm-preservation
-- heading_transform: identity, 90-deg, 180-deg
-- StatePerturbation.normalize_angle: in-range, wrapping, numpy input
-- StatePerturbation.get_transform_matrix_batch: identity heading, 90-deg heading
-- StatePerturbation.augment: prob=0, prob=1 fast/slow vehicles, velocity >= 0,
-  output shape, cos/sin unit-norm
-- StatePerturbation.interpolation_future_trajectory: output shapes,
-  end-point proximity
-- StatePerturbation.centric_transform: identity ego (positions unchanged),
-  zero-mask preserved, translation, ego xy zeroed
-
-Usage:
-    python tests/test_data_augmentation.py          # standalone
-    pytest tests/test_data_augmentation.py -v       # with pytest
-"""
-
-from __future__ import annotations
-
-import math
-import sys
-from pathlib import Path
-
 import numpy as np
-import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from diffusion_planner.utils.data_augmentation import (
-    StatePerturbation,
-    heading_transform,
-    vector_transform,
-)
-
-ATOL = 1e-5
+from diffusion_planner.utils.data_augmentation import EgoPerturbation, StatePerturbation
 
 
-# ─────────────────────────────── helpers ────────────────────────────────────
-
-
-def _rot(B: int, angle: float) -> torch.Tensor:
-    """Batch of 2D CCW rotation matrices, shape (B, 2, 2)."""
-    c, s = math.cos(angle), math.sin(angle)
-    mat = torch.tensor([[c, -s], [s, c]], dtype=torch.float32)
-    return mat.unsqueeze(0).expand(B, -1, -1).clone()
-
-
-def _ego_state(B: int, x: float = 0.0, y: float = 0.0,
-               heading: float = 0.0, vx: float = 5.0) -> torch.Tensor:
-    """Minimal ego_current_state tensor of shape (B, 10)."""
-    state = torch.zeros(B, 10, dtype=torch.float32)
-    state[:, 0] = x
-    state[:, 1] = y
-    state[:, 2] = math.cos(heading)
-    state[:, 3] = math.sin(heading)
-    state[:, 4] = vx
-    return state
-
-
-def _make_inputs(B: int = 1, N_nbr: int = 3, T_past: int = 5, T_fut: int = 80):
-    """Minimal inputs dict + ego_future + neighbors_future for centric_transform."""
-    ego_current_state = _ego_state(B, vx=5.0)
-
-    # Past trajectory approaching origin from behind
-    ego_agent_past = torch.zeros(B, T_past, 3, dtype=torch.float32)
-    for t in range(T_past):
-        ego_agent_past[:, t, 0] = (t - T_past) * 0.1
-
-    neighbor_agents_past = torch.zeros(B, N_nbr, T_past, 11, dtype=torch.float32)
-    lanes = torch.zeros(B, 2, 5, 8, dtype=torch.float32)
-    route_lanes = torch.zeros(B, 2, 5, 8, dtype=torch.float32)
-    polygons = torch.zeros(B, 2, 4, 2, dtype=torch.float32)
-    line_strings = torch.zeros(B, 2, 5, 2, dtype=torch.float32)
-    static_objects = torch.zeros(B, 2, 10, dtype=torch.float32)
-
-    inputs = {
-        "ego_current_state": ego_current_state,
-        "ego_agent_past": ego_agent_past,
-        "neighbor_agents_past": neighbor_agents_past,
-        "lanes": lanes,
-        "route_lanes": route_lanes,
-        "polygons": polygons,
-        "line_strings": line_strings,
-        "static_objects": static_objects,
+def _make_data() -> dict[str, np.ndarray]:
+    data = {
+        "ego_current_state": np.zeros(10, dtype=np.float32),
+        "ego_shape": np.array([3.2, 4.8, 1.9], dtype=np.float32),
+        "ego_agent_future": np.zeros((8, 3), dtype=np.float32),
+        "neighbor_agents_future": np.zeros((2, 8, 3), dtype=np.float32),
+        "goal_pose": np.array([10.0, 0.0, 0.0, 0.0], dtype=np.float32),
+        "neighbor_agents_past": np.zeros((2, 4, 11), dtype=np.float32),
+        "static_objects": np.zeros((2, 10), dtype=np.float32),
+        "lanes": np.zeros((2, 4, 8), dtype=np.float32),
+        "route_lanes": np.zeros((2, 4, 8), dtype=np.float32),
+        "polygons": np.zeros((2, 4, 3), dtype=np.float32),
+        "line_strings": np.zeros((2, 4, 4), dtype=np.float32),
     }
-
-    # Future trajectory: straight ahead at ~0.5 m per step
-    ego_future = torch.zeros(B, T_fut, 3, dtype=torch.float32)
-    for t in range(T_fut):
-        ego_future[:, t, 0] = (t + 1) * 0.5
-
-    neighbors_future = torch.zeros(B, N_nbr, T_fut, 3, dtype=torch.float32)
-    return inputs, ego_future, neighbors_future
-
-
-# ──────────────────────────── vector_transform ──────────────────────────────
+    data["ego_current_state"][2] = 1.0
+    data["ego_current_state"][4] = 5.0
+    data["ego_agent_future"][:, 0] = np.arange(1, 9, dtype=np.float32)
+    data["lanes"][0, :, 0] = np.arange(1, 5, dtype=np.float32)
+    data["lanes"][0, :, 2] = 1.0
+    data["route_lanes"][0, :, 0] = np.arange(1, 5, dtype=np.float32)
+    data["route_lanes"][0, :, 2] = 1.0
+    return data
 
 
-def test_vector_transform_identity():
-    B = 2
-    v = torch.randn(B, 5, 2)
-    I = torch.eye(2).unsqueeze(0).expand(B, -1, -1).clone()
-    out = vector_transform(v, I)
-    assert torch.allclose(out, v, atol=ATOL), \
-        f"Identity rotation changed vectors (max diff {(out-v).abs().max():.2e})"
-    print("  [PASS] vector_transform identity")
-
-
-def test_vector_transform_rotation_90():
-    """CCW 90-deg: (1, 0) -> (0, 1)."""
-    v = torch.tensor([[[1.0, 0.0]]])           # (1, 1, 2)
-    R = _rot(1, math.pi / 2)
-    out = vector_transform(v, R)
-    assert torch.allclose(out, torch.tensor([[[0.0, 1.0]]]), atol=1e-5), \
-        f"90-deg rotation: expected (0,1), got {out}"
-    print("  [PASS] vector_transform 90-degree rotation")
-
-
-def test_vector_transform_with_bias():
-    """Bias is subtracted before rotation (identity rotation)."""
-    v = torch.tensor([[[3.0, 0.0]]])           # (1, 1, 2)
-    bias = torch.tensor([[1.0, 0.0]])           # (1, 2)
-    I = torch.eye(2).unsqueeze(0)
-    out = vector_transform(v, I, bias)
-    assert torch.allclose(out, torch.tensor([[[2.0, 0.0]]]), atol=ATOL), \
-        f"Bias subtraction failed: got {out}"
-    print("  [PASS] vector_transform with bias")
-
-
-def test_vector_transform_norm_preserved():
-    """Rotation preserves vector norms."""
-    B = 3
-    v = torch.randn(B, 4, 2)
-    R = _rot(B, math.pi / 4)
-    out = vector_transform(v, R)
-    assert out.shape == v.shape
-    assert torch.allclose(v.norm(dim=-1), out.norm(dim=-1), atol=1e-5), \
-        "Rotation changed vector norms"
-    print("  [PASS] vector_transform norm preserved")
-
-
-# ──────────────────────────── heading_transform ─────────────────────────────
-
-
-def test_heading_transform_identity():
-    B = 2
-    h = torch.randn(B, 5)
-    I = torch.eye(2).unsqueeze(0).expand(B, -1, -1).clone()
-    out = heading_transform(h, I)
-    assert out.shape == h.shape
-    assert torch.allclose(out, h, atol=1e-5), \
-        f"Identity heading transform changed values (max diff {(out-h).abs().max():.2e})"
-    print("  [PASS] heading_transform identity")
-
-
-def test_heading_transform_rotation_90():
-    """Heading 0 + 90-deg CCW rotation -> pi/2."""
-    h = torch.tensor([[0.0]])
-    R = _rot(1, math.pi / 2)
-    out = heading_transform(h, R)
-    assert abs(out.item() - math.pi / 2) < 1e-5, \
-        f"90-deg heading: expected {math.pi/2:.4f}, got {out.item():.4f}"
-    print("  [PASS] heading_transform 90-degree rotation")
-
-
-def test_heading_transform_rotation_180():
-    """Heading pi/4 + 180-deg rotation -> -3*pi/4 (wrapped)."""
-    h = torch.tensor([[math.pi / 4]])
-    R = _rot(1, math.pi)
-    out = heading_transform(h, R)
-    expected = math.pi / 4 - math.pi  # = -3*pi/4
-    assert abs(out.item() - expected) < 1e-5, \
-        f"180-deg heading: expected {expected:.4f}, got {out.item():.4f}"
-    print("  [PASS] heading_transform 180-degree rotation")
-
-
-# ──────────────────── StatePerturbation init & helpers ──────────────────────
-
-
-def test_state_perturbation_init():
-    aug = StatePerturbation(augment_prob=0.7, wheel_base=3.0, device="cpu")
-    assert aug._augment_prob == 0.7
-    assert aug._wheel_base == 3.0
-    assert aug.num_refine == 20
-    assert aug.time_interval == 0.1
-    assert aug.coeff_matrix.shape == (6, 6), f"coeff_matrix shape: {aug.coeff_matrix.shape}"
-    assert aug.t_matrix.shape == (20, 6), f"t_matrix shape: {aug.t_matrix.shape}"
-    print("  [PASS] StatePerturbation init")
-
-
-def test_normalize_angle_in_range():
-    aug = StatePerturbation()
-    angles = torch.tensor([0.0, math.pi / 2, -math.pi / 2, math.pi * 0.999])
-    out = aug.normalize_angle(angles)
-    assert torch.allclose(out, angles, atol=1e-5), \
-        f"normalize_angle changed in-range angles (max diff {(out-angles).abs().max():.2e})"
-    print("  [PASS] normalize_angle in-range unchanged")
-
-
-def test_normalize_angle_wrapping():
-    """2pi -> 0, -2pi -> 0, 3pi -> -pi."""
-    aug = StatePerturbation()
-    angles = torch.tensor([2 * math.pi, -2 * math.pi, 3 * math.pi])
-    out = aug.normalize_angle(angles)
-    expected = torch.tensor([0.0, 0.0, -math.pi])
-    assert torch.allclose(out, expected, atol=1e-5), \
-        f"normalize_angle wrapping failed: got {out.tolist()}, expected {expected.tolist()}"
-    print("  [PASS] normalize_angle wrapping")
-
-
-def test_normalize_angle_numpy():
-    aug = StatePerturbation()
-    arr = np.array([0.0, 2 * np.pi, -2 * np.pi])
-    out = aug.normalize_angle(arr)
-    assert isinstance(out, np.ndarray), "Should return ndarray for ndarray input"
-    assert np.allclose(out, np.array([0.0, 0.0, 0.0]), atol=1e-5), \
-        f"numpy normalize_angle failed: got {out}"
-    print("  [PASS] normalize_angle numpy input")
-
-
-def test_get_transform_matrix_batch_identity():
-    """cos=1, sin=0 (heading=0) -> identity matrix."""
-    aug = StatePerturbation()
-    cur_state = torch.zeros(2, 10)
-    cur_state[:, 2] = 1.0
-    cur_state[:, 3] = 0.0
-    mat = aug.get_transform_matrix_batch(cur_state)
-    I = torch.eye(2).unsqueeze(0).expand(2, -1, -1)
-    assert torch.allclose(mat, I, atol=1e-5), \
-        f"Identity heading produced non-identity matrix:\n{mat}"
-    print("  [PASS] get_transform_matrix_batch identity")
-
-
-def test_get_transform_matrix_batch_90deg():
-    """cos=0, sin=1 (heading=pi/2) -> [[0, 1], [-1, 0]] (inverse rotation)."""
-    aug = StatePerturbation()
-    cur_state = torch.zeros(1, 10)
-    cur_state[:, 2] = 0.0   # cos(pi/2)
-    cur_state[:, 3] = 1.0   # sin(pi/2)
-    mat = aug.get_transform_matrix_batch(cur_state)
-    # [[cos, sin], [-sin, cos]] = [[0, 1], [-1, 0]]
-    expected = torch.tensor([[[0.0, 1.0], [-1.0, 0.0]]])
-    assert torch.allclose(mat, expected, atol=1e-5), \
-        f"90-deg heading gave wrong matrix:\n{mat}"
-    print("  [PASS] get_transform_matrix_batch 90-degree")
-
-
-# ────────────────────────────── augment ─────────────────────────────────────
-
-
-def test_augment_prob_zero():
-    """augment_prob=0: no samples augmented regardless of velocity."""
-    torch.manual_seed(42)
+def test_augment_prob_zero_returns_original_object():
+    data = _make_data()
     aug = StatePerturbation(augment_prob=0.0)
-    inputs = {"ego_current_state": _ego_state(8, vx=10.0)}
-    aug_flag, _ = aug.augment(inputs)
-    assert not aug_flag.any(), "augment_prob=0 should not augment any sample"
-    print("  [PASS] augment prob=0 no augmentation")
+
+    result = aug(data)
+
+    assert result is data
 
 
-def test_augment_prob_one_fast_vehicle():
-    """augment_prob=1, |vx|>=2: all samples augmented and state changes."""
-    torch.manual_seed(0)
-    aug = StatePerturbation(augment_prob=1.0)
-    B = 4
-    inputs = {"ego_current_state": _ego_state(B, vx=10.0)}
-    original = inputs["ego_current_state"].clone()
-    aug_flag, new_state = aug.augment(inputs)
-    assert aug_flag.all(), "augment_prob=1 with fast vehicle should flag all samples"
-    assert not torch.allclose(new_state[:, :4], original[:, :4], atol=1e-3), \
-        "Augmented state should differ from original"
-    print("  [PASS] augment prob=1 fast vehicle")
+def test_slow_ego_returns_original_object():
+    data = _make_data()
+    data["ego_current_state"][4] = 0.5
+    aug = StatePerturbation(augment_prob=1.0, min_speed=1.0)
+
+    result = aug(data)
+
+    assert result is data
 
 
-def test_augment_slow_vehicle_not_augmented():
-    """Slow vehicle (|vx| < 2) is never augmented even with prob=1."""
-    torch.manual_seed(0)
-    aug = StatePerturbation(augment_prob=1.0)
-    inputs = {"ego_current_state": _ego_state(4, vx=0.5)}
-    aug_flag, _ = aug.augment(inputs)
-    assert not aug_flag.any(), "Slow vehicle (vx=0.5) should not be augmented"
-    print("  [PASS] augment slow vehicle not augmented")
-
-
-def test_augment_velocity_nonneg():
-    """Augmented vx >= 0 (velocity is clamped at 0)."""
-    torch.manual_seed(123)
-    aug = StatePerturbation(augment_prob=1.0)
-    inputs = {"ego_current_state": _ego_state(32, vx=2.5)}
-    _, new_state = aug.augment(inputs)
-    vx = new_state[:, 4]
-    assert (vx >= -1e-6).all(), f"Augmented vx has negative values: min={vx.min():.4f}"
-    print("  [PASS] augment velocity non-negative")
-
-
-def test_augment_output_shape():
-    aug = StatePerturbation()
-    B = 3
-    inputs = {"ego_current_state": _ego_state(B, vx=5.0)}
-    aug_flag, new_state = aug.augment(inputs)
-    assert aug_flag.shape == (B,), f"aug_flag shape mismatch: {aug_flag.shape}"
-    assert new_state.shape == inputs["ego_current_state"].shape, \
-        f"State shape changed: {new_state.shape}"
-    print("  [PASS] augment output shapes correct")
-
-
-def test_augment_cos_sin_unit_norm():
-    """After augmentation, cos and sin values must lie on the unit circle."""
-    torch.manual_seed(42)
-    aug = StatePerturbation(augment_prob=1.0)
-    B = 8
-    inputs = {"ego_current_state": _ego_state(B, vx=5.0)}
-    _, new_state = aug.augment(inputs)
-    norms = torch.hypot(new_state[:, 2], new_state[:, 3])
-    assert torch.allclose(norms, torch.ones(B), atol=1e-5), \
-        f"cos/sin not on unit circle after augment: norms={norms.tolist()}"
-    print("  [PASS] augment cos/sin unit norm")
-
-
-# ──────────────────── interpolation_future_trajectory ───────────────────────
-
-
-def test_interpolation_shape_keep_remaining():
-    """keep_remaining=True preserves trailing waypoints: output shape == input shape."""
-    aug = StatePerturbation()
-    B, T = 2, 80
-    aug_state = _ego_state(B, vx=5.0)
-    ego_future = torch.zeros(B, T, 3)
-    for t in range(T):
-        ego_future[:, t, 0] = (t + 1) * 0.5
-    out = aug.interpolation_future_trajectory(aug_state, ego_future, keep_remaining=True)
-    assert out.shape == (B, T, 3), \
-        f"keep_remaining=True: expected ({B}, {T}, 3), got {out.shape}"
-    print("  [PASS] interpolation shape keep_remaining=True")
-
-
-def test_interpolation_shape_no_remaining():
-    """keep_remaining=False: output length == num_refine (P=20)."""
-    aug = StatePerturbation()
-    B, T, P = 2, 80, aug.num_refine
-    aug_state = _ego_state(B, vx=5.0)
-    ego_future = torch.zeros(B, T, 3)
-    for t in range(T):
-        ego_future[:, t, 0] = (t + 1) * 0.5
-    out = aug.interpolation_future_trajectory(aug_state, ego_future, keep_remaining=False)
-    assert out.shape == (B, P, 3), \
-        f"keep_remaining=False: expected ({B}, {P}, 3), got {out.shape}"
-    print("  [PASS] interpolation shape keep_remaining=False")
-
-
-def test_interpolation_endpoint_proximity():
-    """Interpolated trajectory endpoint is within one timestep of the P-th waypoint.
-
-    The quintic polynomial is fitted to reach ego_future[:, P] at t = (P+1)*dt,
-    so the last *sampled* point (at t = P*dt) differs by roughly one step of travel.
-    With vx=5 m/s and dt=0.1 s the expected gap is ~0.5 m.
-    """
-    aug = StatePerturbation()
-    B, T, P = 1, 80, aug.num_refine
-    aug_state = _ego_state(B, vx=5.0)
-    ego_future = torch.zeros(B, T, 3)
-    for t in range(T):
-        ego_future[:, t, 0] = (t + 1) * 0.5
-    out = aug.interpolation_future_trajectory(aug_state, ego_future)
-    last_interp = out[:, P - 1, :2]
-    target = ego_future[:, P, :2]
-    err = (last_interp - target).abs().max().item()
-    # Allow up to one full timestep of travel at vx=5 m/s (= 0.5 m) plus margin
-    assert err <= 0.5 + 1e-4, f"Interpolation end-point error too large: {err:.4f} m"
-    print("  [PASS] interpolation end-point proximity")
-
-
-# ─────────────────────────── centric_transform ──────────────────────────────
-
-
-def test_centric_transform_identity_ego():
-    """Ego at origin with zero heading: neighbor and lane positions unchanged."""
-    aug = StatePerturbation()
-    B = 1
-    inputs, ego_future, nbrs_future = _make_inputs(B)
-
-    # Put a visible neighbor at (1, 2) with cos=1, sin=0
-    inputs["neighbor_agents_past"][:, 0, :, :6] = torch.tensor(
-        [[1.0, 2.0, 1.0, 0.0, 0.0, 0.0]]
-    )
-    nbr_xy_before = inputs["neighbor_agents_past"][:, 0, :, :2].clone()
-
-    # Put a lane segment at (3, 4)
-    inputs["lanes"][:, 0, :, :8] = torch.tensor([[3.0, 4.0, 1.0, 0.0, 3.0, 4.0, 3.0, 4.0]])
-    lane_xy_before = inputs["lanes"][:, 0, :, :2].clone()
-
-    result_inputs, _, _ = aug.centric_transform(inputs, ego_future, nbrs_future)
-
-    nbr_xy_after = result_inputs["neighbor_agents_past"][:, 0, :, :2]
-    assert torch.allclose(nbr_xy_after, nbr_xy_before, atol=1e-4), \
-        f"Neighbor xy changed under identity transform " \
-        f"(max diff {(nbr_xy_after - nbr_xy_before).abs().max():.2e})"
-
-    lane_xy_after = result_inputs["lanes"][:, 0, :, :2]
-    assert torch.allclose(lane_xy_after, lane_xy_before, atol=1e-4), \
-        f"Lane xy changed under identity transform " \
-        f"(max diff {(lane_xy_after - lane_xy_before).abs().max():.2e})"
-
-    print("  [PASS] centric_transform identity ego (positions preserved)")
-
-
-def test_centric_transform_zero_mask_preserved():
-    """All-zero neighbor entries remain zero after transform (mask respected)."""
-    aug = StatePerturbation()
-    inputs, ego_future, nbrs_future = _make_inputs(1)
-    # neighbor_agents_past is all zeros by default
-    result_inputs, _, _ = aug.centric_transform(inputs, ego_future, nbrs_future)
-    assert torch.all(result_inputs["neighbor_agents_past"] == 0.0), \
-        "Zero-masked neighbor entries were non-zero after centric_transform"
-    print("  [PASS] centric_transform zero mask preserved")
-
-
-def test_centric_transform_translation():
-    """Ego at (5, 3), neighbor at (6, 3) -> neighbor becomes (1, 0) after transform."""
-    aug = StatePerturbation()
-    inputs, ego_future, nbrs_future = _make_inputs(1)
-
-    inputs["ego_current_state"][:, 0] = 5.0
-    inputs["ego_current_state"][:, 1] = 3.0
-    inputs["ego_current_state"][:, 2] = 1.0   # cos(0)
-    inputs["ego_current_state"][:, 3] = 0.0   # sin(0)
-
-    # Visible neighbor at (6, 3)
-    inputs["neighbor_agents_past"][:, 0, :, :6] = torch.tensor(
-        [[6.0, 3.0, 1.0, 0.0, 0.0, 0.0]]
+def test_augmentation_copies_input_and_resets_current_ego_frame():
+    data = _make_data()
+    original_future = data["ego_agent_future"].copy()
+    aug = StatePerturbation(
+        augment_prob=1.0,
+        lateral_offset_std=0.0,
+        yaw_std=0.0,
     )
 
-    result_inputs, _, _ = aug.centric_transform(inputs, ego_future, nbrs_future)
+    result = aug(data)
 
-    nbr_xy = result_inputs["neighbor_agents_past"][:, 0, 0, :2]
-    expected = torch.tensor([[1.0, 0.0]])
-    assert torch.allclose(nbr_xy, expected, atol=1e-4), \
-        f"Translation test: expected {expected.tolist()}, got {nbr_xy.tolist()}"
-    print("  [PASS] centric_transform translation")
-
-
-def test_centric_transform_ego_xy_zeroed():
-    """After centric_transform, ego xy should always be (0, 0)."""
-    aug = StatePerturbation()
-    inputs, ego_future, nbrs_future = _make_inputs(1)
-
-    inputs["ego_current_state"][:, 0] = 10.0
-    inputs["ego_current_state"][:, 1] = -5.0
-
-    result_inputs, _, _ = aug.centric_transform(inputs, ego_future, nbrs_future)
-
-    ego_xy = result_inputs["ego_current_state"][:, :2]
-    assert torch.allclose(ego_xy, torch.zeros(1, 2), atol=1e-4), \
-        f"Ego xy not zeroed after centric_transform: got {ego_xy.tolist()}"
-    print("  [PASS] centric_transform ego xy zeroed")
+    assert result is not data
+    np.testing.assert_array_equal(data["ego_agent_future"], original_future)
+    np.testing.assert_allclose(result["ego_current_state"][:4], [0.0, 0.0, 1.0, 0.0])
+    assert not np.allclose(result["ego_agent_future"], original_future)
 
 
-# ──────────────────────────────── runner ────────────────────────────────────
+def test_augment_with_aux_records_original_gt_in_augmented_frame():
+    data = _make_data()
+    aug = StatePerturbation(
+        augment_prob=1.0,
+        lateral_offset_std=0.0,
+        yaw_std=0.0,
+    )
+
+    result = aug.augment_with_aux(data)
+
+    assert "original_ego_agent_future_in_augmented_frame" in result
+    assert "augmentation_perturbation" in result
+    np.testing.assert_allclose(result["augmentation_perturbation"], [0.0, 0.0, 0.0])
+    np.testing.assert_allclose(
+        result["original_ego_agent_future_in_augmented_frame"][:, :2],
+        data["ego_agent_future"][:, :2],
+    )
 
 
-ALL_TESTS = [
-    test_vector_transform_identity,
-    test_vector_transform_rotation_90,
-    test_vector_transform_with_bias,
-    test_vector_transform_norm_preserved,
-    test_heading_transform_identity,
-    test_heading_transform_rotation_90,
-    test_heading_transform_rotation_180,
-    test_state_perturbation_init,
-    test_normalize_angle_in_range,
-    test_normalize_angle_wrapping,
-    test_normalize_angle_numpy,
-    test_get_transform_matrix_batch_identity,
-    test_get_transform_matrix_batch_90deg,
-    test_augment_prob_zero,
-    test_augment_prob_one_fast_vehicle,
-    test_augment_slow_vehicle_not_augmented,
-    test_augment_velocity_nonneg,
-    test_augment_output_shape,
-    test_augment_cos_sin_unit_norm,
-    test_interpolation_shape_keep_remaining,
-    test_interpolation_shape_no_remaining,
-    test_interpolation_endpoint_proximity,
-    test_centric_transform_identity_ego,
-    test_centric_transform_zero_mask_preserved,
-    test_centric_transform_translation,
-    test_centric_transform_ego_xy_zeroed,
-]
+def test_configurable_perturbation_std_is_used():
+    current_state = np.zeros(10, dtype=np.float32)
+    current_state[4] = 5.0
+    aug = StatePerturbation(
+        lateral_offset_std=0.0,
+        yaw_std=0.0,
+        speed_scale_std=0.0,
+    )
+
+    perturbation = aug._augment_ego_current(current_state)
+
+    assert perturbation == EgoPerturbation(x=0.0, y=0.0, yaw=0.0, speed=5.0)
 
 
-if __name__ == "__main__":
-    print(f"Running {len(ALL_TESTS)} tests for data_augmentation.py\n")
-    passed, failed, errors = 0, 0, []
+def test_speed_perturbation_changes_ego_current_state():
+    data = _make_data()
+    aug = StatePerturbation(
+        augment_prob=1.0,
+        lateral_offset_std=0.0,
+        yaw_std=0.0,
+        speed_scale_std=0.1,
+    )
 
-    for fn in ALL_TESTS:
-        try:
-            fn()
-            passed += 1
-        except Exception as e:
-            failed += 1
-            errors.append((fn.__name__, e))
-            print(f"  [FAIL] {fn.__name__}: {e}")
+    np.random.seed(42)
+    result = aug(data)
 
-    print(f"\n{'=' * 60}")
-    print(f"Results: {passed}/{len(ALL_TESTS)} passed, {failed} failed")
-    if errors:
-        print("\nFailed tests:")
-        for name, err in errors:
-            print(f"  {name}: {err}")
-        sys.exit(1)
-    else:
-        print("All tests passed!")
+    original_speed = float(np.linalg.norm(_make_data()["ego_current_state"][4:6]))
+    result_speed = float(np.linalg.norm(result["ego_current_state"][4:6]))
+    assert not np.isclose(result_speed, original_speed)
+
+
+def test_speed_perturbation_affects_augmented_future():
+    data = _make_data()
+    data["ego_agent_future"][:, 0] = np.arange(1, 9, dtype=np.float32)
+    data["ego_agent_future"][:, 1] = 0.0
+    data["ego_agent_future"][:, 2] = 0.0
+
+    aug_no_speed = StatePerturbation(
+        augment_prob=1.0,
+        lateral_offset_std=0.0,
+        yaw_std=0.0,
+        speed_scale_std=0.0,
+    )
+    aug_with_speed = StatePerturbation(
+        augment_prob=1.0,
+        lateral_offset_std=0.0,
+        yaw_std=0.0,
+        speed_scale_std=0.1,
+    )
+
+    result_no_speed = aug_no_speed(data)
+    data2 = _make_data()
+    data2["ego_agent_future"][:, 0] = np.arange(1, 9, dtype=np.float32)
+    data2["ego_agent_future"][:, 1] = 0.0
+    data2["ego_agent_future"][:, 2] = 0.0
+    result_with_speed = aug_with_speed(data2)
+
+    assert not np.allclose(result_no_speed["ego_agent_future"], result_with_speed["ego_agent_future"])
+
+
+def test_default_wheel_base_is_configurable_when_ego_shape_missing():
+    aug = StatePerturbation(default_wheel_base=2.7)
+
+    assert aug._ego_wheel_base({}) == 2.7

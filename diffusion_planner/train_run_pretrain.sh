@@ -41,6 +41,7 @@ fi
 --nnodes 1 \
 --nproc-per-node $NUM_GPUS \
 --standalone train_predictor.py \
+--resume_model_path "/home/hisaki/Diffusion-Planner/diffusion_planner/training_result/20260616-150116_new_v4/latest.pth" \
 --exp_name ${exp_name} \
 --train_set_list $TRAIN_SET_LIST \
 --use_wandb False \
