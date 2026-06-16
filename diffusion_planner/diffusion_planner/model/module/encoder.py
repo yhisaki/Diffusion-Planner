@@ -8,7 +8,7 @@ from timm.layers import Mlp
 from diffusion_planner.dimensions import *
 from diffusion_planner.model.module.mixer import MixerBlock
 
-CLASS_TYPE_EGO = 0
+CLASS_TYPE_EGO_VELOCITY_HISTORY = 0
 CLASS_TYPE_NEIGHBOR_VEHICLE = 1
 CLASS_TYPE_NEIGHBOR_PEDESTRIAN = 2
 CLASS_TYPE_NEIGHBOR_BICYCLE = 3
@@ -69,7 +69,7 @@ class Encoder(nn.Module):
         self.use_turn_indicators = config.use_turn_indicators
 
         self.token_num = (
-            1  # Ego velocity token
+            1  # Ego velocity history token
             + config.agent_num
             + config.static_objects_num
             + config.lane_num
@@ -81,11 +81,11 @@ class Encoder(nn.Module):
             + 1  # Turn indicator token
         )
 
-        self.ego_velocity_encoder = VectorEncoder(
-            num_float=1,
+        self.ego_velocity_history_encoder = EgoVelocityHistoryEncoder(
+            time_len=config.time_len,
             hidden_dim=config.hidden_dim,
-            class_type=CLASS_TYPE_EGO,
-            dropout_ratio=getattr(config, "velocity_dropout_ratio", 0.0),
+            num_heads=config.num_heads,
+            dropout_ratio=getattr(config, "velocity_dropout_ratio", 0.5),
         )
         self.neighbor_encoder = NeighborEncoder(
             config.time_len,
@@ -216,8 +216,12 @@ class Encoder(nn.Module):
         # ego shape
         ego_shape = inputs["ego_shape"]  # (B, D=3)
 
-        # ego speed, encoded as the only ego context token
-        ego_speed = inputs["ego_current_state"][:, 4:5]  # (B, D=1)
+        # ego velocity history: compute displacements from past poses
+        ego_agent_past = inputs["ego_agent_past"]  # (B, T+1, 4) x, y, cos, sin
+        ego_displacements = (
+            torch.norm(ego_agent_past[:, 1:, :2] - ego_agent_past[:, :-1, :2], dim=-1) / 0.1
+        )  # (B, T)
+        ego_current_speed = inputs["ego_current_state"][:, 4:5]  # (B, 1)
 
         # turn indicator
         turn_indicator = inputs["turn_indicators"][:, :-1]  # (B, T)
@@ -227,7 +231,9 @@ class Encoder(nn.Module):
 
         B = neighbors.shape[0]
 
-        encoding_ego, ego_mask, ego_pos = self.ego_velocity_encoder(ego_speed)
+        encoding_ego, ego_mask, ego_pos = self.ego_velocity_history_encoder(
+            ego_displacements, ego_current_speed
+        )
 
         encoding_neighbors, neighbors_mask, neighbor_pos = self.neighbor_encoder(neighbors)
         encoding_static, static_mask, static_pos = self.static_encoder(static)
@@ -316,6 +322,117 @@ class Encoder(nn.Module):
         )
 
         return encoder_outputs
+
+
+class EgoVelocityHistoryEncoder(nn.Module):
+    def __init__(
+        self,
+        time_len: int,
+        hidden_dim: int,
+        num_heads: int,
+        dropout_ratio: float = 0.0,
+        num_layers: int = 3,
+    ) -> None:
+        super().__init__()
+
+        self._hidden_dim = hidden_dim
+        self._dropout_ratio = dropout_ratio
+
+        self.input_projection = Mlp(
+            in_features=1,
+            hidden_features=hidden_dim,
+            out_features=hidden_dim,
+            act_layer=nn.GELU,
+            drop=0.0,
+        )
+        self.time_embedding = nn.Embedding(time_len, hidden_dim)
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, hidden_dim))
+
+        self.transformer_blocks = nn.ModuleList([
+            nn.TransformerEncoderLayer(
+                d_model=hidden_dim,
+                nhead=num_heads,
+                dim_feedforward=hidden_dim * 4,
+                dropout=0.0,
+                activation="gelu",
+                batch_first=True,
+                norm_first=True,
+            )
+            for _ in range(num_layers)
+        ])
+
+        self.speed_projection = Mlp(
+            in_features=1,
+            hidden_features=hidden_dim,
+            out_features=hidden_dim,
+            act_layer=nn.GELU,
+            drop=0.0,
+        )
+
+        self.norm = nn.LayerNorm(hidden_dim)
+        self.emb_project = Mlp(
+            in_features=hidden_dim,
+            hidden_features=hidden_dim,
+            out_features=hidden_dim,
+            act_layer=nn.GELU,
+            drop=0.0,
+        )
+
+    def forward(
+        self,
+        displacements: torch.Tensor,
+        current_speed: torch.Tensor,
+    ) -> EncoderOutput:
+        """
+        Encode ego velocity history as a single context token using CLS token + Transformer.
+
+        Args:
+            displacements: (B, T) scalar displacements computed from pose differences.
+            current_speed: (B, 1) current velocity from ego_current_state.
+
+        Returns:
+            encoding: (B, 1, hidden_dim)
+            mask: (B, 1), True when dropped during training
+            pos: (B, 1, 4 + CLASS_TYPE_NUM), neutral pose at origin plus class type
+        """
+        B, T = displacements.shape
+
+        pos = torch.cat(
+            [
+                torch.zeros((B, 2), device=displacements.device, dtype=displacements.dtype),
+                torch.ones((B, 1), device=displacements.device, dtype=displacements.dtype),
+                torch.zeros((B, 1), device=displacements.device, dtype=displacements.dtype),
+            ],
+            dim=-1,
+        )
+        pos = pos.unsqueeze(1)
+        pos = add_class_type(pos, CLASS_TYPE_EGO_VELOCITY_HISTORY)
+
+        mask = torch.zeros((B, 1), dtype=torch.bool, device=displacements.device)
+        if self.training and self._dropout_ratio > 0:
+            drop_mask = torch.rand((B, 1), device=displacements.device) < self._dropout_ratio
+            mask = mask | drop_mask
+
+        x = displacements.unsqueeze(-1)
+        x = self.input_projection(x)
+        timestep = torch.arange(T, device=x.device)
+        x = x + self.time_embedding(timestep).unsqueeze(0)
+
+        cls_tokens = self.cls_token.expand(B, -1, -1)
+        x = torch.cat([cls_tokens, x], dim=1)
+
+        for block in self.transformer_blocks:
+            x = block(x)
+
+        x = x[:, :1, :]
+
+        speed_emb = self.speed_projection(current_speed).unsqueeze(1)
+        x = x + speed_emb
+
+        x = self.emb_project(self.norm(x))
+        x = x * (~mask).unsqueeze(-1).to(dtype=x.dtype)
+
+        return x, mask, pos
 
 
 class NeighborEncoder(nn.Module):
@@ -438,9 +555,7 @@ class NeighborEncoder(nn.Module):
         timestep = torch.arange(V, device=x.device)
         x = x + self.time_embedding(timestep).unsqueeze(0)
 
-        safe_history_step_invalid_mask = (
-            valid_slot_mask.unsqueeze(-1) & history_step_invalid_mask
-        )
+        safe_history_step_invalid_mask = valid_slot_mask.unsqueeze(-1) & history_step_invalid_mask
         query = self.query.expand(B * P, -1, -1)
         x, _ = self.attention(
             query=query,
@@ -777,7 +892,6 @@ class VectorEncoder(nn.Module):
     ) -> None:
         super().__init__()
         assert class_type in [
-            CLASS_TYPE_EGO,
             CLASS_TYPE_GOAL_POSE,
             CLASS_TYPE_EGO_SHAPE,
             CLASS_TYPE_TURN_INDICATOR,
