@@ -438,10 +438,8 @@ class NeighborEncoder(nn.Module):
         timestep = torch.arange(V, device=x.device)
         x = x + self.time_embedding(timestep).unsqueeze(0)
 
-        safe_history_step_invalid_mask = torch.where(
-            valid_slot_mask.unsqueeze(-1),
-            history_step_invalid_mask,
-            torch.zeros_like(history_step_invalid_mask),
+        safe_history_step_invalid_mask = (
+            valid_slot_mask.unsqueeze(-1) & history_step_invalid_mask
         )
         query = self.query.expand(B * P, -1, -1)
         x, _ = self.attention(
