@@ -13,27 +13,28 @@ def _valid_xy(x: np.ndarray) -> np.ndarray:
     return np.any(np.abs(x[..., :2]) > 1e-6, axis=-1)
 
 
-@dataclass(frozen=True)
+@dataclass
 class EgoPerturbation:
     x: float
     y: float
     yaw: float
     speed: float
+    speed_scale: float = 1.0
 
 
-@dataclass(frozen=True)
+@dataclass
 class StatePerturbationConfig:
     augment_prob: float = 0.5
     min_speed: float = 2.0
     min_length: float = 10.0
     time_interval: float = 0.1
-    min_linearization_speed: float = 0.5
-    exact_position_gain: float = 2.0
+    min_linearization_speed: float = 1.0
+    exact_position_gain: float = 1.0
     exact_velocity_gain: float = 3.0
-    lateral_offset_std: float = 1.0
+    lateral_offset_std: float = 1.5
     yaw_std: float = 0.05
     default_wheel_base: float = 3.0
-    speed_scale_std: float = 0.05
+    speed_scale_std: float = 0.15
 
 
 class StatePerturbation:
@@ -48,16 +49,16 @@ class StatePerturbation:
     def __init__(
         self,
         augment_prob: float = 0.5,
-        min_speed: float = 2.0,
-        min_length: float = 10.0,
+        min_speed: float = 1.0,
+        min_length: float = 15.0,
         time_interval: float = 0.1,
-        min_linearization_speed: float = 0.5,
+        min_linearization_speed: float = 1.0,
         exact_position_gain: float = 2.0,
         exact_velocity_gain: float = 3.0,
-        lateral_offset_std: float = 1.0,
+        lateral_offset_std: float = 1.5,
         yaw_std: float = 0.05,
         default_wheel_base: float = 3.0,
-        speed_scale_std: float = 0.05,
+        speed_scale_std: float = 0.15,
     ) -> None:
         self.config = StatePerturbationConfig(
             augment_prob=augment_prob,
@@ -91,15 +92,21 @@ class StatePerturbation:
             return data
         if abs(float(data["ego_current_state"][4])) < self.config.min_speed:
             return data
-        if self._future_trajectory_length(data) <= self.config.min_length:
-            return data
 
+        future_length = self._future_trajectory_length(data)
+        std_scale = min(1.0, future_length / self.config.min_length)
+        cfg = self.config
+        cfg.lateral_offset_std *= std_scale
+        cfg.yaw_std *= std_scale
+        
         augmented = {
             key: np.array(value, copy=True) if isinstance(value, np.ndarray) else value
             for key, value in data.items()
         }
 
         perturbation = self._augment_ego_current(data["ego_current_state"])
+        augmented["ego_current_state"][4] = perturbation.speed
+        self._scale_ego_past(augmented, perturbation.speed_scale)
         if include_aux:
             self._add_original_gt_in_augmented_frame(augmented, perturbation, source_data=data)
         self._rollout_ego_future_with_dynamics(augmented, perturbation)
@@ -139,7 +146,14 @@ class StatePerturbation:
         speed_scale = float(np.random.normal(1.0, cfg.speed_scale_std))
         current_speed = max(0.0, float(np.linalg.norm(current_state[4:6])))
         speed = current_speed * speed_scale
-        return EgoPerturbation(float(x), float(y), float(theta), float(speed))
+        return EgoPerturbation(float(x), float(y), float(theta), float(speed), float(speed_scale))
+
+    def _scale_ego_past(self, data: dict[str, np.ndarray], speed_scale: float) -> None:
+        past = data.get("ego_agent_past")
+        if past is None or past.shape[-1] < 2:
+            return
+        past = past.reshape(-1, past.shape[-1])
+        past[:, :2] *= speed_scale
 
     @staticmethod
     def _integrate_bicycle_velocity_steering_step(
