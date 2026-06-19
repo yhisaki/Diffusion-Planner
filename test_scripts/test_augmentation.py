@@ -18,9 +18,9 @@ parser.add_argument("--augment_min_linearization_speed", type=float, default=0.5
 parser.add_argument("--augment_exact_position_gain", type=float, default=2.0)
 parser.add_argument("--augment_exact_velocity_gain", type=float, default=3.0)
 parser.add_argument("--augment_lateral_offset_std", type=float, default=1.0)
-parser.add_argument("--augment_yaw_std", type=float, default=0.05)
+parser.add_argument("--augment_yaw_half_range", type=float, default=0.05)
 parser.add_argument("--augment_default_wheel_base", type=float, default=3.0)
-parser.add_argument("--augment_speed_scale_std", type=float, default=0.05)
+parser.add_argument("--augment_speed_scale_half_range", type=float, default=0.05)
 args = parser.parse_args()
 
 target_npz = args.target_npz
@@ -43,9 +43,9 @@ aug = StatePerturbation(
     exact_position_gain=args.augment_exact_position_gain,
     exact_velocity_gain=args.augment_exact_velocity_gain,
     lateral_offset_std=args.augment_lateral_offset_std,
-    yaw_std=args.augment_yaw_std,
+    yaw_half_range=args.augment_yaw_half_range,
     default_wheel_base=args.augment_default_wheel_base,
-    speed_scale_std=args.augment_speed_scale_std,
+    speed_scale_half_range=args.augment_speed_scale_half_range,
 )
 
 
@@ -70,7 +70,7 @@ fig, ax = plt.subplots(figsize=(10, 10))
 view_range = 30
 visualize_inputs(as_visualization_batch(deepcopy(data)), save_path=None, ax=ax, view_ranges=[view_range])
 
-# Get augmentation ranges from the aug object (approximate +/- 3 sigma)
+# Get augmentation ranges from the aug object (approximate +/- 3 sigma for normal)
 cfg = aug.config
 x_min, y_min = 0.0, -3.0 * cfg.lateral_offset_std
 x_max, y_max = 0.0, 3.0 * cfg.lateral_offset_std

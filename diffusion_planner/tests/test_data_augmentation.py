@@ -52,7 +52,7 @@ def test_augmentation_copies_input_and_resets_current_ego_frame():
     aug = StatePerturbation(
         augment_prob=1.0,
         lateral_offset_std=0.0,
-        yaw_std=0.0,
+        yaw_half_range=0.0,
     )
 
     result = aug(data)
@@ -68,7 +68,7 @@ def test_augment_with_aux_records_original_gt_in_augmented_frame():
     aug = StatePerturbation(
         augment_prob=1.0,
         lateral_offset_std=0.0,
-        yaw_std=0.0,
+        yaw_half_range=0.0,
     )
 
     result = aug.augment_with_aux(data)
@@ -82,13 +82,13 @@ def test_augment_with_aux_records_original_gt_in_augmented_frame():
     )
 
 
-def test_configurable_perturbation_std_is_used():
+def test_configurable_perturbation_half_range_is_used():
     current_state = np.zeros(10, dtype=np.float32)
     current_state[4] = 5.0
     aug = StatePerturbation(
         lateral_offset_std=0.0,
-        yaw_std=0.0,
-        speed_scale_std=0.0,
+        yaw_half_range=0.0,
+        speed_scale_half_range=0.0,
     )
 
     perturbation = aug._augment_ego_current(current_state)
@@ -101,8 +101,8 @@ def test_speed_perturbation_changes_ego_current_state():
     aug = StatePerturbation(
         augment_prob=1.0,
         lateral_offset_std=0.0,
-        yaw_std=0.0,
-        speed_scale_std=0.1,
+        yaw_half_range=0.0,
+        speed_scale_half_range=0.1,
     )
 
     np.random.seed(42)
@@ -122,14 +122,14 @@ def test_speed_perturbation_affects_augmented_future():
     aug_no_speed = StatePerturbation(
         augment_prob=1.0,
         lateral_offset_std=0.0,
-        yaw_std=0.0,
-        speed_scale_std=0.0,
+        yaw_half_range=0.0,
+        speed_scale_half_range=0.0,
     )
     aug_with_speed = StatePerturbation(
         augment_prob=1.0,
         lateral_offset_std=0.0,
-        yaw_std=0.0,
-        speed_scale_std=0.1,
+        yaw_half_range=0.0,
+        speed_scale_half_range=0.1,
     )
 
     result_no_speed = aug_no_speed(data)

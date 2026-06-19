@@ -67,7 +67,6 @@ def get_args():
     parser.add_argument("--line_string_len", type=int, default=POINTS_PER_LINE_STRING)
 
     # DataLoader parameters
-    parser.add_argument("--use_data_augment", default=True, type=boolean)
     parser.add_argument("--augment_prob", type=float, help="augmentation probability", default=0.5)
     parser.add_argument("--normalization_file_path", default="normalization.json", type=str)
     parser.add_argument("--num_workers", default=8, type=int)
@@ -218,11 +217,7 @@ def model_training(args):
     train_epochs = args.train_epochs
     batch_size = args.batch_size
 
-    # set up data loaders
-    if args.use_data_augment:
-        aug = StatePerturbation(augment_prob=args.augment_prob)
-    else:
-        aug = None
+    aug = StatePerturbation(augment_prob=args.augment_prob)
 
     # prepare dataset
     train_set = DiffusionPlannerData(args.train_set_list, data_augmentation=aug)

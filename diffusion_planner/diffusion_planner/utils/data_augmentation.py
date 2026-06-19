@@ -24,17 +24,18 @@ class EgoPerturbation:
 
 @dataclass
 class StatePerturbationConfig:
-    augment_prob: float = 0.5
-    min_speed: float = 2.0
-    min_length: float = 10.0
-    time_interval: float = 0.1
-    min_linearization_speed: float = 1.0
-    exact_position_gain: float = 1.0
-    exact_velocity_gain: float = 3.0
-    lateral_offset_std: float = 1.5
-    yaw_std: float = 0.05
-    default_wheel_base: float = 3.0
-    speed_scale_std: float = 0.5
+    augment_prob: float
+    min_speed: float
+    min_length: float
+    time_interval: float
+    max_steering_angle: float
+    min_linearization_speed: float
+    exact_position_gain: float
+    exact_velocity_gain: float
+    lateral_offset_std: float
+    yaw_half_range: float
+    default_wheel_base: float
+    speed_scale_half_range: float
 
 
 class StatePerturbation:
@@ -52,26 +53,28 @@ class StatePerturbation:
         min_speed: float = 1.0,
         min_length: float = 15.0,
         time_interval: float = 0.1,
+        max_steering_rate: float = 0.5,
         min_linearization_speed: float = 1.0,
-        exact_position_gain: float = 2.0,
+        exact_position_gain: float = 1.0,
         exact_velocity_gain: float = 3.0,
         lateral_offset_std: float = 1.5,
-        yaw_std: float = 0.05,
+        yaw_half_range: float = 0.2,
         default_wheel_base: float = 3.0,
-        speed_scale_std: float = 0.5,
+        speed_scale_half_range: float = 0.2,
     ) -> None:
         self.config = StatePerturbationConfig(
             augment_prob=augment_prob,
             min_speed=min_speed,
             min_length=min_length,
             time_interval=time_interval,
+            max_steering_angle=max_steering_rate,
             min_linearization_speed=min_linearization_speed,
             exact_position_gain=exact_position_gain,
             exact_velocity_gain=exact_velocity_gain,
             lateral_offset_std=lateral_offset_std,
-            yaw_std=yaw_std,
+            yaw_half_range=yaw_half_range,
             default_wheel_base=default_wheel_base,
-            speed_scale_std=speed_scale_std,
+            speed_scale_half_range=speed_scale_half_range,
         )
 
     def __call__(self, data: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
@@ -97,7 +100,7 @@ class StatePerturbation:
         std_scale = min(1.0, future_length / self.config.min_length)
         cfg = self.config
         cfg.lateral_offset_std *= std_scale
-        cfg.yaw_std *= std_scale
+        cfg.yaw_half_range *= std_scale
 
         augmented = {
             key: np.array(value, copy=True) if isinstance(value, np.ndarray) else value
@@ -141,9 +144,24 @@ class StatePerturbation:
     def _augment_ego_current(self, current_state: np.ndarray) -> EgoPerturbation:
         cfg = self.config
         x = 0.0
+        # yaw and speed_scale use uniform distributions over [-half_range, half_range].
+        # lateral_offset uses a normal distribution N(0, lateral_offset_std^2).
         y = float(np.random.normal(0.0, cfg.lateral_offset_std))
-        theta = float(np.random.normal(0.0, cfg.yaw_std))
-        speed_scale = max(0.0, float(np.random.normal(1.0, cfg.speed_scale_std)))
+        theta = float(
+            np.random.uniform(
+                -cfg.yaw_half_range,
+                cfg.yaw_half_range,
+            )
+        )
+        speed_scale = max(
+            0.0,
+            float(
+                np.random.uniform(
+                    1.0 - cfg.speed_scale_half_range,
+                    1.0 + cfg.speed_scale_half_range,
+                )
+            ),
+        )
         current_speed = max(0.0, float(np.linalg.norm(current_state[4:6])))
         speed = current_speed * speed_scale
         return EgoPerturbation(float(x), float(y), float(theta), float(speed), float(speed_scale))
@@ -248,7 +266,11 @@ class StatePerturbation:
             steering = np.arctan2(
                 wheel_base * lateral_command, linearization_speed * linearization_speed
             )
-
+            steering = np.clip(
+                steering,
+                -cfg.max_steering_angle,
+                cfg.max_steering_angle,
+            )
             x, y, theta, v = self._integrate_bicycle_accel_steering_step(
                 x, y, theta, v, acceleration, steering, wheel_base, dt
             )
