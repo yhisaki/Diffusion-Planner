@@ -15,6 +15,7 @@ import gradio as gr
 import plotly.graph_objects as go
 
 from training_data_visualizer.loader import load_npz
+from training_data_visualizer.visualization import get_traffic_light_summary
 from training_result_visualizer.inference import Predictor
 from training_result_visualizer.loader import load_path_list
 from training_result_visualizer.visualization import (
@@ -63,17 +64,17 @@ class TrainingResultViewer:
             raise gr.Error("path_list.json に有効な NPZ path がありません。")
         self.current_index = 0
         self.noise_seed = 0
-        traj_fig, fig_x, fig_y, info, idx = self.load_current()
-        return traj_fig, fig_x, fig_y, info, idx, max(0, len(self.npz_paths) - 1)
+        traj_fig, fig_x, fig_y, info, tl_summary, idx = self.load_current()
+        return traj_fig, fig_x, fig_y, info, tl_summary, idx, max(0, len(self.npz_paths) - 1)
 
     def load_current(
         self, time_step: int = 0, view_range: int = 60, noise_scale: float = 0.0
-    ) -> tuple[object, object, object, str, int]:
+    ) -> tuple[object, object, object, str, str, int]:
         empty = go.Figure()
         if not self.npz_paths:
-            return empty, empty, empty, "No path list loaded", 0
+            return empty, empty, empty, "No path list loaded", "", 0
         if self.predictor is None:
-            return empty, empty, empty, "No model loaded", 0
+            return empty, empty, empty, "No model loaded", "", 0
 
         idx = max(0, min(self.current_index, len(self.npz_paths) - 1))
         self.current_index = idx
@@ -89,6 +90,7 @@ class TrainingResultViewer:
             data, prediction, view_range=view_range, time_step=marker_step
         )
         fig_x, fig_y = plot_prediction_components(data, prediction)
+        tl_summary = get_traffic_light_summary(data)
         info = (
             f"Sample {idx + 1} / {len(self.npz_paths)}\n"
             f"NPZ: {npz_path}\n"
@@ -97,7 +99,7 @@ class TrainingResultViewer:
             f"Noise scale: {float(noise_scale):.2f}\n"
             f"Noise seed: {self.noise_seed}"
         )
-        return traj_fig, fig_x, fig_y, info, idx
+        return traj_fig, fig_x, fig_y, info, tl_summary, idx
 
     def navigate(self, delta: int, *args) -> tuple:
         self.current_index = max(0, min(len(self.npz_paths) - 1, self.current_index + delta))
@@ -166,6 +168,7 @@ def build_interface(viewer: TrainingResultViewer) -> gr.Blocks:
                 )
                 btn_resample_noise = gr.Button("Resample Noise", size="sm")
                 info_text = gr.Textbox(label="Info", interactive=False, lines=7)
+                tl_info_text = gr.Textbox(label="Traffic Light Info", interactive=False, lines=8)
 
             with gr.Column(scale=2):
                 traj_plot = gr.Plot(label="Prediction vs GT")
@@ -174,11 +177,11 @@ def build_interface(viewer: TrainingResultViewer) -> gr.Blocks:
                     plot_y = gr.Plot(label="Prediction y")
 
         reload_inputs = [time_step, view_range, noise_scale]
-        outputs = [traj_plot, plot_x, plot_y, info_text, sample_slider]
+        outputs = [traj_plot, plot_x, plot_y, info_text, tl_info_text, sample_slider]
 
         def _configure(*args):
-            traj_fig, fig_x, fig_y, info, idx, max_idx = viewer.configure(*args)
-            return traj_fig, fig_x, fig_y, info, gr.update(value=idx, maximum=max(1, max_idx))
+            traj_fig, fig_x, fig_y, info, tl_summary, idx, max_idx = viewer.configure(*args)
+            return traj_fig, fig_x, fig_y, info, tl_summary, gr.update(value=idx, maximum=max(1, max_idx))
 
         btn_load.click(
             _configure,

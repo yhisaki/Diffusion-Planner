@@ -20,6 +20,7 @@ from diffusion_planner.utils.data_augmentation import StatePerturbation
 
 from training_data_visualizer.loader import discover_npz_files, load_npz
 from training_data_visualizer.visualization import (
+    get_traffic_light_summary,
     plot_tcos,
     plot_tdisplacement,
     plot_trajectory,
@@ -47,7 +48,7 @@ class TrainingDataViewer:
         time_step: int = 0,
         show_augmented: bool = False,
         augmentation_seed: int = 0,
-    ) -> tuple[go.Figure, go.Figure, go.Figure, go.Figure, go.Figure, go.Figure, str, str, int]:
+    ) -> tuple[go.Figure, go.Figure, go.Figure, go.Figure, go.Figure, go.Figure, str, str, str, int]:
         """Load data for current index and return UI outputs."""
         if not self.npz_paths:
             return (
@@ -58,6 +59,7 @@ class TrainingDataViewer:
                 go_empty(),
                 go_empty(),
                 "No NPZ files found",
+                "",
                 "",
                 0,
             )
@@ -76,6 +78,7 @@ class TrainingDataViewer:
         tcos_fig = plot_tcos(data)
         tsin_fig = plot_tsin(data)
         tdisplacement_fig = plot_tdisplacement(data)
+        tl_summary = get_traffic_light_summary(data)
 
         info = f"Sample {idx + 1} / {len(self.npz_paths)} — {self.npz_paths[idx].name}"
         if show_augmented and "augmentation_perturbation" in data:
@@ -93,7 +96,7 @@ class TrainingDataViewer:
         else:
             ego_state_str = self._format_ego_state(ego_state)
 
-        return traj_fig, tx_fig, ty_fig, tcos_fig, tsin_fig, tdisplacement_fig, info, ego_state_str, idx
+        return traj_fig, tx_fig, ty_fig, tcos_fig, tsin_fig, tdisplacement_fig, info, ego_state_str, tl_summary, idx
 
     @staticmethod
     def _format_ego_state(state: np.ndarray) -> str:
@@ -233,6 +236,7 @@ def build_interface(viewer: TrainingDataViewer) -> gr.Blocks:
                 gr.Markdown("### Data Info")
                 info_text = gr.Textbox(label="", interactive=False, lines=1)
                 ego_state_text = gr.Textbox(label="ego_current_state", interactive=False, lines=10)
+                tl_info_text = gr.Textbox(label="Traffic Light Info", interactive=False, lines=8)
 
             with gr.Column(scale=2):
                 traj_plot = gr.Plot(label="Trajectory View")
@@ -243,7 +247,7 @@ def build_interface(viewer: TrainingDataViewer) -> gr.Blocks:
                 tdisplacement_plot = gr.Plot(label="t-displacement")
 
         inputs = [time_step_sl, show_augmented_cb, augmentation_seed_state]
-        outputs = [traj_plot, tx_plot, ty_plot, tcos_plot, tsin_plot, tdisplacement_plot, info_text, ego_state_text, sample_slider]
+        outputs = [traj_plot, tx_plot, ty_plot, tcos_plot, tsin_plot, tdisplacement_plot, info_text, ego_state_text, tl_info_text, sample_slider]
 
         _bind_events(
             viewer,

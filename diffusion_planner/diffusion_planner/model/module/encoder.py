@@ -10,18 +10,16 @@ from diffusion_planner.model.module.mixer import MixerBlock
 
 CLASS_TYPE_EGO_VELOCITY = 0
 CLASS_TYPE_EGO_DISPLACEMENT = 1
-CLASS_TYPE_NEIGHBOR_VEHICLE = 2
-CLASS_TYPE_NEIGHBOR_PEDESTRIAN = 3
-CLASS_TYPE_NEIGHBOR_BICYCLE = 4
-CLASS_TYPE_STATIC = 5
-CLASS_TYPE_LANE = 6
-CLASS_TYPE_ROUTE = 7
-CLASS_TYPE_POLYGON = 8
-CLASS_TYPE_LINE_STRING = 9
-CLASS_TYPE_GOAL_POSE = 10
-CLASS_TYPE_EGO_SHAPE = 11
-CLASS_TYPE_TURN_INDICATOR = 12
-CLASS_TYPE_NUM = 13
+CLASS_TYPE_NEIGHBOR = 2
+CLASS_TYPE_STATIC = 3
+CLASS_TYPE_LANE = 4
+CLASS_TYPE_ROUTE = 5
+CLASS_TYPE_POLYGON = 6
+CLASS_TYPE_LINE_STRING = 7
+CLASS_TYPE_GOAL_POSE = 8
+CLASS_TYPE_EGO_SHAPE = 9
+CLASS_TYPE_TURN_INDICATOR = 10
+CLASS_TYPE_NUM = 11
 
 EncoderOutput: TypeAlias = tuple[torch.Tensor, torch.Tensor, torch.Tensor]
 
@@ -44,21 +42,15 @@ def add_class_type(x: torch.Tensor, class_type: int) -> torch.Tensor:
     return torch.cat([x, class_type_tensor], dim=-1)
 
 
-def add_neighbor_class_type(x: torch.Tensor, neighbor_type: torch.Tensor) -> torch.Tensor:
+def add_neighbor_class_type(x: torch.Tensor) -> torch.Tensor:
     """
-    Add neighbor-specific class type to the input tensor.
+    Add the neighbor class type to the input tensor.
     Args:
         x: Tensor of shape (B, P, D=4) where D=4 represents (x, y, cos, sin)
-        neighbor_type: Tensor of shape (B, P, 3) one-hot type (vehicle, pedestrian, bicycle)
     Returns:
         x: Tensor with neighbor class type added at the end
     """
-    B, P, D = x.shape
-    assert D == 4, "Input tensor must have 4 features (x, y, cos, sin)"
-
-    type_idx = neighbor_type.argmax(dim=-1) + CLASS_TYPE_NEIGHBOR_VEHICLE
-    class_type_tensor = F.one_hot(type_idx, num_classes=CLASS_TYPE_NUM).to(dtype=x.dtype)
-    return torch.cat([x, class_type_tensor], dim=-1)
+    return add_class_type(x, CLASS_TYPE_NEIGHBOR)
 
 
 class Encoder(nn.Module):
@@ -464,9 +456,8 @@ class NeighborEncoder(nn.Module):
         return torch.all(zero_step_invalid_mask, dim=-1)
 
     def _latest_neighbor_position(self, latest_neighbor_state: torch.Tensor) -> torch.Tensor:
-        neighbor_type = latest_neighbor_state[..., 8:]
         pos = latest_neighbor_state[..., :4].clone()  # x, y, cos, sin
-        return add_neighbor_class_type(pos, neighbor_type)
+        return add_neighbor_class_type(pos)
 
     def forward(self, x: torch.Tensor) -> EncoderOutput:
         """
@@ -837,13 +828,6 @@ class VectorEncoder(nn.Module):
         dropout_ratio: float = 0.0,
     ) -> None:
         super().__init__()
-        assert class_type in [
-            CLASS_TYPE_EGO_VELOCITY,
-            CLASS_TYPE_EGO_DISPLACEMENT,
-            CLASS_TYPE_GOAL_POSE,
-            CLASS_TYPE_EGO_SHAPE,
-            CLASS_TYPE_TURN_INDICATOR,
-        ], "Invalid class type for VectorEncoder"
         assert not use_input_as_pos or num_float >= 4, (
             "VectorEncoder requires at least 4 inputs when using input as position"
         )

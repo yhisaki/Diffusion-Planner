@@ -38,7 +38,7 @@ def compute_training_loss(
     norm = args.state_normalizer
 
     ego_future, neighbors_future, neighbor_future_mask = futures
-    neighbors_future_valid = ~neighbor_future_mask  # [B, Pn, V]
+    neighbors_future_valid = ~neighbor_future_mask  # [B, Pn, T]
 
     B, Pn, T, _ = neighbors_future.shape
     P = 1 + Pn
@@ -46,7 +46,6 @@ def compute_training_loss(
         inputs["ego_current_state"][:, :4],
         inputs["neighbor_agents_past"][:, :Pn, -1, :4],
     )
-    longitudinal_velocity = inputs["ego_current_state"][:, 4:5]
     neighbor_current_mask = torch.sum(torch.ne(neighbors_current[..., :4], 0), dim=-1) == 0
     neighbor_mask = torch.concat(
         (neighbor_current_mask.unsqueeze(-1), neighbor_future_mask), dim=-1
@@ -84,53 +83,44 @@ def compute_training_loss(
     gt_target = all_gt[:, :, 1:, :]  # [B, P, T, 4]
 
     loss_dict = loss_func(model_output, gt_target)
-    heading_l2_loss = loss_dict["heading_l2_loss"]  # [B, P, T]
-    position_lat_loss = loss_dict["position_lat_loss"]  # [B, P, T]
-    position_lon_loss = loss_dict["position_lon_loss"]  # [B, P, T]
+    snr_weight = snr_loss_weight(t[..., 1:, 0])
+    position_loss = loss_dict["position_loss"] * snr_weight  # [B, P, T]
+    heading_loss = loss_dict["heading_loss"] * snr_weight  # [B, P, T]
 
-    # velocity weight
-    velocity_weight = longitudinal_velocity * args.coeff_velocity
-    velocity_weight = torch.abs(velocity_weight)
-    velocity_weight = torch.clamp_min(velocity_weight, 1.0)
-    velocity_weight = velocity_weight.unsqueeze(-1)  # [B, 1, 1]
-    position_lon_loss = position_lon_loss / velocity_weight
-
-    # timestep weight
-    timestep_weight = args.coeff_timestep
-    assert T % len(timestep_weight) == 0, (
-        f"Timestep {T} is not divisible by the number of timestep weights {len(timestep_weight)}"
-    )
-    unit = T // len(timestep_weight)
-    for i in range(len(timestep_weight)):
-        position_lat_loss[:, :, (i + 0) * unit : (i + 1) * unit] *= timestep_weight[i]
-        position_lon_loss[:, :, (i + 0) * unit : (i + 1) * unit] *= timestep_weight[i]
-        heading_l2_loss[:, :, (i + 0) * unit : (i + 1) * unit] *= timestep_weight[i]
-
-    dpm_loss = (
-        args.coeff_position_lat_loss * position_lat_loss
-        + args.coeff_position_lon_loss * position_lon_loss
-        + args.coeff_heading_l2_loss * heading_l2_loss
-    )  # [B, P, T]
-    dpm_loss = dpm_loss * snr_loss_weight(t[..., 1:, 0])
-
-    masked_prediction_loss = dpm_loss[:, 1:, :][neighbors_future_valid]
+    masked_neighbor_position_loss = position_loss[:, 1:, :][neighbors_future_valid]
+    masked_neighbor_heading_loss = heading_loss[:, 1:, :][neighbors_future_valid]
 
     loss = {}
 
-    if masked_prediction_loss.numel() > 0:
-        loss["neighbor_prediction_loss"] = masked_prediction_loss.mean()
+    if masked_neighbor_position_loss.numel() > 0:
+        loss["neighbor_position_loss"] = masked_neighbor_position_loss.mean()
+        loss["neighbor_heading_loss"] = masked_neighbor_heading_loss.mean()
     else:
-        loss["neighbor_prediction_loss"] = torch.tensor(0.0, device=masked_prediction_loss.device)
+        loss["neighbor_position_loss"] = torch.tensor(
+            0.0, device=masked_neighbor_position_loss.device
+        )
+        loss["neighbor_heading_loss"] = torch.tensor(
+            0.0, device=masked_neighbor_heading_loss.device
+        )
 
-    loss["ego_planning_loss"] = dpm_loss[:, 0, : args.ego_prediction_horizon].mean()
+    loss["ego_position_loss"] = position_loss[:, 0].mean()
+    loss["ego_heading_loss"] = heading_loss[:, 0].mean()
 
-    assert not torch.isnan(dpm_loss).sum(), f"loss cannot be nan, z={z}"
+    loss["ego_planning_loss"] = (
+        args.coeff_pos_ego * loss["ego_position_loss"]
+        + args.coeff_heading_ego * loss["ego_heading_loss"]
+    )
+    loss["neighbor_prediction_loss"] = (
+        args.coeff_pos_neighbor * loss["neighbor_position_loss"]
+        + args.coeff_heading_neighbor * loss["neighbor_heading_loss"]
+    )
+
+    assert not torch.isnan(position_loss).any(), f"position loss cannot be nan, z={z}"
+    assert not torch.isnan(heading_loss).any(), f"heading loss cannot be nan, z={z}"
 
     turn_indicator_logit = decoder_output["turn_indicator_logit"]  # [B, TURN_INDICATOR_OUTPUT_KEEP]
     turn_indicator_gt = make_turn_indicator_gt(inputs["turn_indicators"])  # [B,]
-    turn_indicator_loss = F.cross_entropy(
-        turn_indicator_logit, turn_indicator_gt, reduction="none"
-    )
+    turn_indicator_loss = F.cross_entropy(turn_indicator_logit, turn_indicator_gt, reduction="none")
     turn_indicator_change = inputs["turn_indicators"][:, -2] != inputs["turn_indicators"][:, -1]
     turn_indicator_coeff = torch.where(turn_indicator_change, 1.0, 0.05)
     turn_indicator_loss = (turn_indicator_loss * turn_indicator_coeff).mean()
@@ -152,54 +142,46 @@ def loss_func(
     Calculate the loss between predicted and ground truth trajectories.
 
     Args:
-        trajectory_pred (torch.Tensor): Predicted trajectory of shape [..., T, D].
-        trajectory_gt (torch.Tensor): Ground truth trajectory of shape [..., T, D].
-        where, D=4 (x, y, cos, sin).
+        trajectory_pred (torch.Tensor): Predicted trajectory with shape [B, Pn + 1, T, D].
+        trajectory_gt (torch.Tensor): Ground-truth trajectory with shape [B, Pn + 1, T, D].
+            B is the batch size, Pn is the number of predicted neighbors, T is the
+            prediction horizon, and D=4 represents (x, y, cos(heading), sin(heading)).
 
     Returns:
         dict[str, torch.Tensor]: A dictionary containing the loss values.
-        where, each loss' shape is [..., T].
+            Each loss has shape [B, Pn + 1, T].
     """
     result_dict = {}
 
-    ###################
-    # Basic L2 Losses #
-    ###################
-    # simple L2 loss
-    result_dict["simple_l2_loss"] = torch.mean((trajectory_pred - trajectory_gt) ** 2, dim=-1)
+    position_error = trajectory_pred[..., :2] - trajectory_gt[..., :2]  # [B, Pn + 1, T, 2]
+    dx = position_error[..., 0]  # [B, Pn + 1, T]
+    dy = position_error[..., 1]  # [B, Pn + 1, T]
 
-    # Position loss (x, y coordinates)
-    position_pred = trajectory_pred[..., :2]  # [..., T, 2]
-    position_gt = trajectory_gt[..., :2]  # [..., T, 2]
+    cos_gt = trajectory_gt[..., 2]  # [B, Pn + 1, T]
+    sin_gt = trajectory_gt[..., 3]  # [B, Pn + 1, T]
 
-    # Calculate L2 distance for each time step
-    position_diff = position_pred - position_gt  # [..., T, 2]
-    position_error = torch.sum(position_diff**2, dim=-1)  # [..., T]
-    result_dict["position_l2_loss"] = position_error
+    longitudinal_error = dx * cos_gt + dy * sin_gt  # [B, Pn + 1, T]
+    lateral_error = -dx * sin_gt + dy * cos_gt  # [B, Pn + 1, T]
 
-    # Heading loss (cos, sin components)
-    cos_sin_pred = trajectory_pred[..., 2:]  # [..., T, 2]
-    cos_sin_gt = trajectory_gt[..., 2:]  # [..., T, 2]
+    longitudinal_loss = F.huber_loss(
+        longitudinal_error, torch.zeros_like(longitudinal_error), reduction="none"
+    )  # [B, Pn + 1, T]
+    lateral_loss = F.huber_loss(
+        lateral_error, torch.zeros_like(lateral_error), reduction="none"
+    )  # [B, Pn + 1, T]
 
-    # heading l2 loss
-    heading_loss = torch.sum((cos_sin_pred - cos_sin_gt) ** 2, dim=-1)  # [..., T]
-    result_dict["heading_l2_loss"] = heading_loss
+    position_loss = longitudinal_loss + lateral_loss  # [B, Pn + 1, T]
 
-    ######################
-    # Specialized Losses #
-    ######################
-    # Lateral or longitudinal error (along vehicle direction)
-    cos_gt = cos_sin_gt[..., 0]  # [..., T]
-    sin_gt = cos_sin_gt[..., 1]  # [..., T]
-    lon_diff = +position_diff[..., 0] * cos_gt + position_diff[..., 1] * sin_gt  # [..., T]
-    lat_diff = -position_diff[..., 0] * sin_gt + position_diff[..., 1] * cos_gt  # [..., T]
-    lat_error = torch.abs(lat_diff)  # [..., T]
-    lon_error = torch.abs(lon_diff)  # [..., T]
-    result_dict["position_lat_loss"] = lat_error
-    result_dict["position_lon_loss"] = lon_error
+    result_dict["longitudinal_loss"] = longitudinal_loss
+    result_dict["lateral_loss"] = lateral_loss
+    result_dict["position_loss"] = position_loss
 
-    # Cosine similarity loss
-    cosine_similarity = torch.sum(cos_sin_pred * cos_sin_gt, dim=-1)  # [..., T]
-    result_dict["cosine_similarity_loss"] = 1.0 - cosine_similarity  # [..., T]
+    cos_pred = trajectory_pred[..., 2]  # [B, Pn + 1, T]
+    sin_pred = trajectory_pred[..., 3]  # [B, Pn + 1, T]
+
+    heading_loss = F.huber_loss(cos_pred, cos_gt, reduction="none") + F.huber_loss(
+        sin_pred, sin_gt, reduction="none"
+    )
+    result_dict["heading_loss"] = heading_loss
 
     return result_dict

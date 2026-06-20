@@ -88,6 +88,8 @@ def train_epoch(
 
         scaler.step(optimizer)
         scaler.update()
+        if scheduler is not None:
+            scheduler.step()
 
         ema.update(get_model(model))
 
@@ -100,11 +102,17 @@ def train_epoch(
             log_start_time = time.perf_counter()
             recent_losses = epoch_loss[-log_interval:]
             avg_loss = sum(l["loss"].item() for l in recent_losses) / len(recent_losses)
-            avg_ego_planning = sum(l["ego_planning_loss"].item() for l in recent_losses) / len(
+            avg_ego_pos = sum(l["ego_position_loss"].item() for l in recent_losses) / len(
                 recent_losses
             )
-            avg_neighbor_pred = sum(
-                l["neighbor_prediction_loss"].item() for l in recent_losses
+            avg_ego_heading = sum(l["ego_heading_loss"].item() for l in recent_losses) / len(
+                recent_losses
+            )
+            avg_neighbor_pos = sum(
+                l["neighbor_position_loss"].item() for l in recent_losses
+            ) / len(recent_losses)
+            avg_neighbor_heading = sum(
+                l["neighbor_heading_loss"].item() for l in recent_losses
             ) / len(recent_losses)
             avg_turn_indicator = sum(l["turn_indicator_loss"].item() for l in recent_losses) / len(
                 recent_losses
@@ -113,8 +121,10 @@ def train_epoch(
             print(
                 f"  Batch {batch_idx + 1}/{len(data_loader)} | "
                 f"Loss: {avg_loss:.4f} | "
-                f"Ego: {avg_ego_planning:.4f} | "
-                f"Neighbor: {avg_neighbor_pred:.4f} | "
+                f"Ego Pos: {avg_ego_pos:.4f} | "
+                f"Ego Heading: {avg_ego_heading:.4f} | "
+                f"Neighbor Pos: {avg_neighbor_pos:.4f} | "
+                f"Neighbor Heading: {avg_neighbor_heading:.4f} | "
                 f"Turn: {avg_turn_indicator:.4f} | "
                 f"LR: {lr:.6f} | "
                 f"{log_interval} batches: {elapsed_sec:.2f}s"

@@ -187,7 +187,6 @@ class Decoder(nn.Module):
                 cross_c_mask=encoding_mask,
                 neighbor_current_mask=neighbor_current_mask,
                 agent_class=agent_class,
-                current_states=current_states,
             ).reshape(B, P, -1, self._state_dim),
             "turn_indicator_logit": turn_indicator_logit,
         }
@@ -240,7 +239,6 @@ class Decoder(nn.Module):
                     "cross_c": encoding,
                     "cross_c_mask": encoding_mask,
                     "neighbor_current_mask": neighbor_current_mask,
-                    "current_states": current_states,
                     "agent_class": agent_class,
                 },
                 "inputs": inputs,
@@ -261,7 +259,6 @@ class Decoder(nn.Module):
                 "cross_c": encoding,
                 "cross_c_mask": encoding_mask,
                 "neighbor_current_mask": neighbor_current_mask,
-                "current_states": current_states,
                 "agent_class": agent_class,
             },
             **model_wrapper_params,

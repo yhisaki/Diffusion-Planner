@@ -65,7 +65,6 @@ DECODER_INPUT_NAMES = [
     "sampled_trajectories",
     "diffusion_time",
     "neighbor_agents_past",
-    "ego_current_state",
 ]
 
 TURN_INDICATOR_INPUT_NAMES = ["encoding", "final_x0"]
@@ -193,14 +192,11 @@ class DecoderONNXWrapper(nn.Module):
         sampled_trajectories: torch.Tensor,
         diffusion_time: torch.Tensor,
         neighbor_agents_past: torch.Tensor,
-        ego_current_state: torch.Tensor,
     ) -> torch.Tensor:
         batch_size = encoding.shape[0]
         agent_num = 1 + self.decoder._predicted_neighbor_num
-        ego_current = ego_current_state[:, None, :4]
         neighbors_current = neighbor_agents_past[:, : self.decoder._predicted_neighbor_num, -1, :4]
         neighbor_current_mask = torch.sum(torch.ne(neighbors_current[..., :4], 0), dim=-1) == 0
-        current_states = torch.cat([ego_current, neighbors_current], dim=1)
 
         neighbor_type = neighbor_agents_past[:, : self.decoder._predicted_neighbor_num, -1, 8:11]
         neighbor_class = neighbor_type.argmax(dim=-1) + 1
@@ -223,7 +219,6 @@ class DecoderONNXWrapper(nn.Module):
             cross_c_mask=self.decoder._make_encoding_mask(encoding),
             neighbor_current_mask=neighbor_current_mask,
             agent_class=agent_class,
-            current_states=current_states,
         ).reshape(batch_size, agent_num, 1 + self.decoder._future_len, 4)
 
         return model_output
@@ -390,7 +385,6 @@ def build_decoder_inputs(inputs: TensorDict, encoding: torch.Tensor) -> TensorDi
         "sampled_trajectories": inputs["sampled_trajectories"],
         "diffusion_time": torch.ones(1, MAX_NUM_AGENTS, OUTPUT_T + 1, 1, dtype=torch.float32),
         "neighbor_agents_past": inputs["neighbor_agents_past"],
-        "ego_current_state": inputs["ego_current_state"],
     }
 
 
@@ -620,7 +614,6 @@ def validate_split_models(
             decoder_inputs["sampled_trajectories"],
             decoder_inputs["diffusion_time"],
             decoder_inputs["neighbor_agents_past"],
-            decoder_inputs["ego_current_state"],
         )
         torch_turn_indicator = wrappers.turn_indicator(torch_encoding, torch_model_output)
 
@@ -633,7 +626,6 @@ def validate_split_models(
         "sampled_trajectories": decoder_inputs["sampled_trajectories"].cpu().numpy(),
         "diffusion_time": decoder_inputs["diffusion_time"].cpu().numpy(),
         "neighbor_agents_past": decoder_inputs["neighbor_agents_past"].cpu().numpy(),
-        "ego_current_state": decoder_inputs["ego_current_state"].cpu().numpy(),
     }
     onnx_model_output = run_ort_in_subprocess(decoder_onnx_path, decoder_onnx_inputs)[0]
     compare("model_output", torch_model_output.cpu().numpy(), onnx_model_output)
@@ -693,7 +685,6 @@ def convert_model(
             decoder_inputs["sampled_trajectories"],
             decoder_inputs["diffusion_time"],
             decoder_inputs["neighbor_agents_past"],
-            decoder_inputs["ego_current_state"],
         )
     turn_indicator_inputs = build_turn_indicator_inputs(encoding, final_x0)
 

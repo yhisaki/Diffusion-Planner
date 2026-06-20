@@ -169,7 +169,6 @@ class DiT(nn.Module):
         cross_c_mask: torch.Tensor,
         neighbor_current_mask: torch.Tensor,
         agent_class: torch.Tensor,
-        current_states: torch.Tensor,
     ) -> torch.Tensor:
         """
         Predict denoised trajectories conditioned on encoder context.
@@ -183,8 +182,6 @@ class DiT(nn.Module):
             neighbor_current_mask: Neighbor-agent mask, shape (B, P - 1). True means invalid.
             agent_class: Agent class ids, shape (B, P). 0=ego, 1=vehicle,
                 2=pedestrian, 3=bicycle.
-            current_states: Current agent states, shape (B, P, 4). Neighbor predicted xy
-                offsets are converted back to ego-frame positions using current xy.
 
         Returns:
             Predicted trajectories, shape (B, P, T, 4).
@@ -208,9 +205,4 @@ class DiT(nn.Module):
 
         x = self.final_layer(x, t)  # (B, P, output_dim)
         x = x.reshape(B, P, T, D)
-        # if P > 1 and T > 1:
-        #     neighbor_xy = x[:, 1:, 1:, :2] + current_states[:, 1:, None, :2]
-        #     neighbor_future = torch.cat([neighbor_xy, x[:, 1:, 1:, 2:]], dim=-1)
-        #     neighbors = torch.cat([x[:, 1:, :1], neighbor_future], dim=2)
-        #     x = torch.cat([x[:, :1], neighbors], dim=1)
         return x

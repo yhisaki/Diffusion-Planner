@@ -46,7 +46,6 @@ def get_args():
 
     parser.add_argument("--future_len", type=int, default=OUTPUT_T)
     parser.add_argument("--time_len", type=int, default=INPUT_T + 1)
-    parser.add_argument("--ego_prediction_horizon", type=int, default=OUTPUT_T)
 
     parser.add_argument("--agent_state_dim", type=int, help="past state dim for agents", default=11)
     parser.add_argument("--agent_num", type=int, default=MAX_NUM_NEIGHBORS)
@@ -78,7 +77,8 @@ def get_args():
     parser.add_argument("--seed", type=int, default=3407)
     parser.add_argument("--train_epochs", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=512)
-    parser.add_argument("--learning_rate", type=float, default=1e-4)
+    parser.add_argument("--learning_rate", type=float, default=3e-4)
+    parser.add_argument("--warmup_steps", type=int, default=1000)
     parser.add_argument("--encoder_drop_path_rate", type=float, default=0.1)
     parser.add_argument("--decoder_drop_path_rate", type=float, default=0.1)
     parser.add_argument(
@@ -89,16 +89,10 @@ def get_args():
     )
     parser.add_argument("--use_turn_indicators", type=boolean, default=True)
 
-    parser.add_argument("--coeff_position_lat_loss", type=float, default=1.0)
-    parser.add_argument("--coeff_position_lon_loss", type=float, default=1.0)
-    parser.add_argument("--coeff_heading_l2_loss", type=float, default=1.0)
-    parser.add_argument("--coeff_velocity", type=float, default=1.0)
-    parser.add_argument(
-        "--coeff_timestep",
-        type=list,
-        default=[1.0, 1.0, 1.0, 1.0],
-        help="Set for 4 sections [0,20), [20, 40), [40, 60), [60, 80)",
-    )
+    parser.add_argument("--coeff_pos_ego", type=float, default=1.0)
+    parser.add_argument("--coeff_pos_neighbor", type=float, default=1.0)
+    parser.add_argument("--coeff_heading_ego", type=float, default=1.0)
+    parser.add_argument("--coeff_heading_neighbor", type=float, default=1.0)
 
     parser.add_argument("--alpha_planning_loss", type=float, default=1.0)
     parser.add_argument("--alpha_neighbor_loss", type=float, default=0.1)
@@ -108,8 +102,8 @@ def get_args():
     parser.add_argument("--use_ema", default=True, type=boolean)
 
     # Model
-    parser.add_argument("--encoder_mixer_depth", type=int, default=6)
-    parser.add_argument("--encoder_fusion_depth", type=int, default=6)
+    parser.add_argument("--encoder_mixer_depth", type=int, default=3)
+    parser.add_argument("--encoder_fusion_depth", type=int, default=3)
     parser.add_argument("--decoder_depth", type=int, help="number of decoding layers", default=3)
     parser.add_argument("--num_heads", type=int, help="number of multi-head", default=8)
     parser.add_argument("--hidden_dim", type=int, help="hidden dimension", default=256)
@@ -271,6 +265,19 @@ def model_training(args):
         }
     ])
 
+    if args.warmup_steps < 0:
+        raise ValueError("warmup_steps must be non-negative")
+
+    def lr_lambda(step):
+        if step < args.warmup_steps:
+            return step / args.warmup_steps
+        return 1.0
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(
+        optimizer,
+        lr_lambda=lr_lambda,
+    )
+
     if args.use_ema:
         model_ema = ModelEma(
             diffusion_planner,
@@ -280,11 +287,11 @@ def model_training(args):
 
     if args.resume_model_path is not None:
         print(f"Model loaded from {args.resume_model_path}")
-        diffusion_planner, optimizer, init_epoch, wandb_id, model_ema = resume_model(
+        diffusion_planner, optimizer, scheduler, init_epoch, wandb_id, model_ema = resume_model(
             args.resume_model_path,
             diffusion_planner,
             optimizer,
-            None,
+            scheduler,
             model_ema,
             args.device,
         )
@@ -347,6 +354,7 @@ def model_training(args):
             aug,
             epoch=epoch,
             save_path=save_path,
+            scheduler=scheduler,
         )
 
         if global_rank == 0:
@@ -363,6 +371,7 @@ def model_training(args):
                 "model": get_model_state_dict(diffusion_planner),
                 "ema_state_dict": model_ema.ema.state_dict(),
                 "optimizer": optimizer.state_dict(),
+                "schedule": scheduler.state_dict(),
                 "wandb_id": wandb_id,
             }
             torch.save(model_dict, f"{save_path}/model_epoch_{epoch + 1}.pth")
@@ -372,8 +381,7 @@ def model_training(args):
 
 if __name__ == "__main__":
     args = get_args()
-
-    assert len(args.coeff_timestep) == 4
+    torch.set_printoptions(threshold=1000)
 
     # Run
     model_training(args)

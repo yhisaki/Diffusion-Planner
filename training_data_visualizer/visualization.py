@@ -45,6 +45,17 @@ LINE_TYPE_NUM = 10
 SEGMENT_POINT_DIM = LINE_TYPE_LEFT_START + LINE_TYPE_NUM + LINE_TYPE_NUM
 
 
+_TL_LABELS = ["Green", "Yellow", "Red", "White/Unknown", "No TL"]
+_TL_COLORS = ["green", "yellow", "red", "purple", "black"]
+_TL_LEGEND_ORDER = [
+    ("Green", "green"),
+    ("Yellow", "yellow"),
+    ("Red", "red"),
+    ("White/Unknown", "purple"),
+    ("No TL", "black"),
+]
+
+
 def _traffic_light_color(tl: np.ndarray) -> str:
     """Return a colour string for a 5-element traffic-light one-hot vector."""
     if tl[0] == 1:
@@ -58,6 +69,21 @@ def _traffic_light_color(tl: np.ndarray) -> str:
     if tl[4] == 1:
         return "black"
     return "purple"
+
+
+def _traffic_light_label(tl: np.ndarray) -> str:
+    """Return a human-readable label for a 5-element traffic-light one-hot vector."""
+    if tl[0] == 1:
+        return "Green"
+    if tl[1] == 1:
+        return "Yellow"
+    if tl[2] == 1:
+        return "Red"
+    if tl[3] == 1:
+        return "White/Unknown"
+    if tl[4] == 1:
+        return "No TL"
+    return "White/Unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -323,9 +349,13 @@ def _draw_lanes(data: dict[str, np.ndarray]) -> list[go.Scatter]:
     if lanes.ndim == 3:
         lanes = lanes.reshape(lanes.shape[0], lanes.shape[1], -1)
 
+    _seen_states: set[str] = set()
+
     for i in range(lanes.shape[0]):
         tl = lanes[i, 0, TRAFFIC_LIGHT : TRAFFIC_LIGHT + 5]
         color = _traffic_light_color(tl)
+        state_label = _traffic_light_label(tl)
+        _seen_states.add(state_label)
 
         lx = lanes[i, :, 0] + lanes[i, :, 4]
         ly = lanes[i, :, 1] + lanes[i, :, 5]
@@ -340,8 +370,8 @@ def _draw_lanes(data: dict[str, np.ndarray]) -> list[go.Scatter]:
                 x=lx[lane_mask],
                 y=ly[lane_mask],
                 mode="lines",
-                line=dict(color=color, width=1),
-                opacity=0.25,
+                line=dict(color=color, width=2),
+                opacity=0.55,
                 showlegend=False,
             )
         )
@@ -350,11 +380,24 @@ def _draw_lanes(data: dict[str, np.ndarray]) -> list[go.Scatter]:
                 x=rx[lane_mask],
                 y=ry[lane_mask],
                 mode="lines",
-                line=dict(color=color, width=1),
-                opacity=0.25,
+                line=dict(color=color, width=2),
+                opacity=0.55,
                 showlegend=False,
             )
         )
+
+    for state_label, state_color in _TL_LEGEND_ORDER:
+        if state_label in _seen_states:
+            traces.append(
+                go.Scatter(
+                    x=[None],
+                    y=[None],
+                    mode="lines",
+                    line=dict(color=state_color, width=2),
+                    name=f"TL: {state_label}",
+                    showlegend=True,
+                )
+            )
 
     return traces
 
@@ -818,3 +861,42 @@ def plot_tdisplacement(data: dict[str, np.ndarray]) -> go.Figure:
         legend=dict(font=dict(size=9)),
     )
     return fig
+
+
+# ---------------------------------------------------------------------------
+# Traffic light summary
+# ---------------------------------------------------------------------------
+
+
+def get_traffic_light_summary(data: dict[str, np.ndarray]) -> str:
+    """Return a human-readable summary of traffic light states in the scene.
+
+    Counts lanes by traffic light state (Green / Yellow / Red / White-Unknown / No TL)
+    and returns a formatted multi-line string.
+    """
+    if "lanes" not in data:
+        return "No lane data available"
+
+    lanes = data["lanes"]
+    if lanes.ndim == 3:
+        lanes = lanes.reshape(lanes.shape[0], lanes.shape[1], -1)
+
+    counts = {"Green": 0, "Yellow": 0, "Red": 0, "White/Unknown": 0, "No TL": 0}
+    for i in range(lanes.shape[0]):
+        if not np.any(np.abs(lanes[i, :, :8]) > 1e-6, axis=-1).any():
+            continue
+        tl = lanes[i, 0, TRAFFIC_LIGHT : TRAFFIC_LIGHT + 5]
+        label = _traffic_light_label(tl)
+        counts[label] += 1
+
+    total = sum(counts.values())
+    if total == 0:
+        return "No valid lane segments found"
+
+    lines = [f"Total lanes with TL info: {total}"]
+    for label in ["Green", "Yellow", "Red", "White/Unknown", "No TL"]:
+        cnt = counts[label]
+        if cnt > 0:
+            lines.append(f"  {label}: {cnt} ({cnt / total * 100:.0f}%)")
+
+    return "\n".join(lines)
