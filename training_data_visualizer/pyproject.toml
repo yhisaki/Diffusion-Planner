@@ -2,10 +2,10 @@
 name = "training_data_visualizer"
 version = "0.1.0"
 description = "Interactive visualization of training data NPZ files using Plotly and Gradio"
-requires-python = ">=3.13"
+requires-python = ">=3.10"
 dependencies = [
     "gradio>=6.14.0",
-    "numpy>=2.4.4",
+    "numpy>=2.0",
     "plotly>=6.0.0",
 ]
 
