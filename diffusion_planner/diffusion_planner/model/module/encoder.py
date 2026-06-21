@@ -381,9 +381,7 @@ class EgoDisplacementEncoder(nn.Module):
         displacement_1s = torch.norm(
             current_pos - ego_agent_past[:, idx_1s, :2], dim=-1, keepdim=True
         )
-        displacements = torch.cat(
-            [displacement_3s, displacement_2s, displacement_1s], dim=-1
-        )
+        displacements = torch.cat([displacement_3s, displacement_2s, displacement_1s], dim=-1)
         return self.encoder(displacements)
 
 
@@ -427,9 +425,9 @@ class NeighborEncoder(nn.Module):
             drop=0.0,
         )
 
-        self.blocks = nn.ModuleList([
-            MixerBlock(tokens_mlp_dim, channels_mlp_dim, drop_path_rate) for _ in range(depth)
-        ])
+        self.blocks = nn.ModuleList(
+            [MixerBlock(tokens_mlp_dim, channels_mlp_dim, drop_path_rate) for _ in range(depth)]
+        )
 
         self.norm = nn.LayerNorm(channels_mlp_dim)
         self.emb_project = Mlp(
@@ -592,9 +590,9 @@ class LaneEncoder(nn.Module):
             drop=0.0,
         )
 
-        self.blocks = nn.ModuleList([
-            MixerBlock(tokens_mlp_dim, channels_mlp_dim, drop_path_rate) for i in range(depth)
-        ])
+        self.blocks = nn.ModuleList(
+            [MixerBlock(tokens_mlp_dim, channels_mlp_dim, drop_path_rate) for i in range(depth)]
+        )
 
         self.norm = nn.LayerNorm(channels_mlp_dim)
         self.emb_project = Mlp(
@@ -753,9 +751,9 @@ class LineEncoder(nn.Module):
             drop=0.0,
         )
 
-        self.blocks = nn.ModuleList([
-            MixerBlock(tokens_mlp_dim, channels_mlp_dim, drop_path_rate) for i in range(depth)
-        ])
+        self.blocks = nn.ModuleList(
+            [MixerBlock(tokens_mlp_dim, channels_mlp_dim, drop_path_rate) for i in range(depth)]
+        )
 
         self.norm = nn.LayerNorm(channels_mlp_dim)
         self.emb_project = Mlp(
@@ -934,9 +932,9 @@ class Fusion(nn.Module):
         depth: int,
     ) -> None:
         super().__init__()
-        self.blocks = nn.ModuleList([
-            FusionBlock(hidden_dim, num_heads, drop_path_rate) for _ in range(depth)
-        ])
+        self.blocks = nn.ModuleList(
+            [FusionBlock(hidden_dim, num_heads, drop_path_rate) for _ in range(depth)]
+        )
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """

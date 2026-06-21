@@ -86,9 +86,10 @@ def resume_model(
     scheduler: Any | None,
     ema: Any,
     device: torch.device | str,
-) -> tuple[nn.Module, Optimizer, int, str | None, Any] | tuple[
-    nn.Module, Optimizer, Any, int, str | None, Any
-]:
+) -> (
+    tuple[nn.Module, Optimizer, int, str | None, Any]
+    | tuple[nn.Module, Optimizer, Any, int, str | None, Any]
+):
     """
     load ckpt from path
     """

@@ -108,9 +108,9 @@ def train_epoch(
             avg_ego_heading = sum(l["ego_heading_loss"].item() for l in recent_losses) / len(
                 recent_losses
             )
-            avg_neighbor_pos = sum(
-                l["neighbor_position_loss"].item() for l in recent_losses
-            ) / len(recent_losses)
+            avg_neighbor_pos = sum(l["neighbor_position_loss"].item() for l in recent_losses) / len(
+                recent_losses
+            )
             avg_neighbor_heading = sum(
                 l["neighbor_heading_loss"].item() for l in recent_losses
             ) / len(recent_losses)

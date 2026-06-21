@@ -174,9 +174,9 @@ class DiT(nn.Module):
             drop=0.0,
         )
         self.t_embedder = SinusoidalTimeEmbedding(hidden_dim)
-        self.blocks = nn.ModuleList([
-            DiTBlock(hidden_dim, heads, dropout, mlp_ratio) for i in range(depth)
-        ])
+        self.blocks = nn.ModuleList(
+            [DiTBlock(hidden_dim, heads, dropout, mlp_ratio) for i in range(depth)]
+        )
         self.final_layer = FinalLayer(hidden_dim, output_dim)
 
     def forward(

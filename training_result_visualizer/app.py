@@ -163,9 +163,7 @@ def build_interface(viewer: TrainingResultViewer) -> gr.Blocks:
                 view_range = gr.Slider(20, 200, value=60, step=5, label="View Range [m]")
 
                 gr.Markdown("### Diffusion Input Noise")
-                noise_scale = gr.Slider(
-                    0.0, 1.0, value=0.0, step=0.01, label="Noise Scale"
-                )
+                noise_scale = gr.Slider(0.0, 1.0, value=0.0, step=0.01, label="Noise Scale")
                 btn_resample_noise = gr.Button("Resample Noise", size="sm")
                 info_text = gr.Textbox(label="Info", interactive=False, lines=7)
                 tl_info_text = gr.Textbox(label="Traffic Light Info", interactive=False, lines=8)
@@ -181,7 +179,14 @@ def build_interface(viewer: TrainingResultViewer) -> gr.Blocks:
 
         def _configure(*args):
             traj_fig, fig_x, fig_y, info, tl_summary, idx, max_idx = viewer.configure(*args)
-            return traj_fig, fig_x, fig_y, info, tl_summary, gr.update(value=idx, maximum=max(1, max_idx))
+            return (
+                traj_fig,
+                fig_x,
+                fig_y,
+                info,
+                tl_summary,
+                gr.update(value=idx, maximum=max(1, max_idx)),
+            )
 
         btn_load.click(
             _configure,
@@ -198,9 +203,7 @@ def build_interface(viewer: TrainingResultViewer) -> gr.Blocks:
 
         btn_shuffle.click(viewer.shuffle, inputs=reload_inputs, outputs=outputs)
         btn_reload.click(viewer.load_current, inputs=reload_inputs, outputs=outputs)
-        btn_resample_noise.click(
-            viewer.resample_noise, inputs=reload_inputs, outputs=outputs
-        )
+        btn_resample_noise.click(viewer.resample_noise, inputs=reload_inputs, outputs=outputs)
         sample_slider.change(viewer.jump, inputs=[sample_slider] + reload_inputs, outputs=outputs)
         time_step.release(viewer.load_current, inputs=reload_inputs, outputs=outputs)
         view_range.release(viewer.load_current, inputs=reload_inputs, outputs=outputs)

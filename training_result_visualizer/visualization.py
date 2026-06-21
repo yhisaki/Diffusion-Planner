@@ -37,7 +37,10 @@ def plot_prediction_vs_gt(
         neighbor_valid_mask = _neighbor_validity_mask(data, len(pred) - 1)
 
         for neighbor_index, neighbor_pred in enumerate(pred[1:], start=1):
-            if neighbor_index - 1 < len(neighbor_valid_mask) and not neighbor_valid_mask[neighbor_index - 1]:
+            if (
+                neighbor_index - 1 < len(neighbor_valid_mask)
+                and not neighbor_valid_mask[neighbor_index - 1]
+            ):
                 continue
             neighbor_valid = _valid_xy_mask(neighbor_pred)
             if not np.any(neighbor_valid):
@@ -49,7 +52,9 @@ def plot_prediction_vs_gt(
                     mode="lines",
                     line=dict(color="#00897B", width=2),
                     opacity=0.45,
-                    name="Neighbor Prediction" if neighbor_index == 1 else f"Neighbor Prediction {neighbor_index}",
+                    name="Neighbor Prediction"
+                    if neighbor_index == 1
+                    else f"Neighbor Prediction {neighbor_index}",
                     showlegend=neighbor_index == 1,
                 )
             )
@@ -65,7 +70,8 @@ def _empty_figure(title: str) -> go.Figure:
 
 
 def plot_prediction_components(
-    data: dict[str, np.ndarray], prediction: np.ndarray | None,
+    data: dict[str, np.ndarray],
+    prediction: np.ndarray | None,
 ) -> tuple[go.Figure, go.Figure]:
     """Plot per-step x and y of GT and prediction over time as two separate figures."""
     if prediction is None or "ego_agent_future" not in data:
@@ -80,8 +86,18 @@ def plot_prediction_components(
     t = np.arange(n)
 
     fig_x = go.Figure()
-    fig_x.add_trace(go.Scatter(x=t, y=gt[:n, 0], mode="lines", line=dict(color="#1F77B4", width=2), name="GT"))
-    fig_x.add_trace(go.Scatter(x=t, y=pred[:n, 0], mode="lines", line=dict(color="#1F77B4", width=2, dash="dash"), name="Pred"))
+    fig_x.add_trace(
+        go.Scatter(x=t, y=gt[:n, 0], mode="lines", line=dict(color="#1F77B4", width=2), name="GT")
+    )
+    fig_x.add_trace(
+        go.Scatter(
+            x=t,
+            y=pred[:n, 0],
+            mode="lines",
+            line=dict(color="#1F77B4", width=2, dash="dash"),
+            name="Pred",
+        )
+    )
     fig_x.update_layout(
         title="Prediction x",
         xaxis_title="Time step",
@@ -91,8 +107,18 @@ def plot_prediction_components(
     )
 
     fig_y = go.Figure()
-    fig_y.add_trace(go.Scatter(x=t, y=gt[:n, 1], mode="lines", line=dict(color="#FF7F0E", width=2), name="GT"))
-    fig_y.add_trace(go.Scatter(x=t, y=pred[:n, 1], mode="lines", line=dict(color="#FF7F0E", width=2, dash="dash"), name="Pred"))
+    fig_y.add_trace(
+        go.Scatter(x=t, y=gt[:n, 1], mode="lines", line=dict(color="#FF7F0E", width=2), name="GT")
+    )
+    fig_y.add_trace(
+        go.Scatter(
+            x=t,
+            y=pred[:n, 1],
+            mode="lines",
+            line=dict(color="#FF7F0E", width=2, dash="dash"),
+            name="Pred",
+        )
+    )
     fig_y.update_layout(
         title="Prediction y",
         xaxis_title="Time step",
@@ -117,7 +143,9 @@ def _valid_xy_mask(trajectory: np.ndarray) -> np.ndarray:
     return ~((trajectory[:, 0] == 0) & (trajectory[:, 1] == 0))
 
 
-def _neighbor_validity_mask(data: dict[str, np.ndarray], num_predicted_neighbors: int) -> np.ndarray:
+def _neighbor_validity_mask(
+    data: dict[str, np.ndarray], num_predicted_neighbors: int
+) -> np.ndarray:
     if "neighbor_agents_past" not in data or num_predicted_neighbors <= 0:
         return np.ones(num_predicted_neighbors, dtype=bool)
 

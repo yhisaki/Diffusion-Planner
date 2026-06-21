@@ -108,7 +108,8 @@ void process_sequence(
   // Replace the goal pose with the last frame's pose
   seq.route.goal_pose = seq.data_list.back().kinematic_state.pose.pose;
 
-  // Frames whose freshest required message is older than this are skipped as stale. build_sequences records the age; the decision is made here.
+  // Frames whose freshest required message is older than this are skipped as stale. build_sequences
+  // records the age; the decision is made here.
   constexpr int64_t kStaleThresholdNs = 500'000'000LL;  // 500 ms
 
   // Process frames with stopping count tracking
@@ -177,14 +178,12 @@ void process_sequence(
     // Create has_speed_limit flags based on speed_limit values
     std::vector<bool> lanes_has_speed_limit(lanes_speed_limit.size());
     for (size_t idx = 0; idx < lanes_speed_limit.size(); ++idx) {
-      lanes_has_speed_limit[idx] =
-        (lanes_speed_limit[idx] > std::numeric_limits<float>::epsilon());
+      lanes_has_speed_limit[idx] = (lanes_speed_limit[idx] > std::numeric_limits<float>::epsilon());
     }
 
     // Get route lanes data with speed limits
-    const std::vector<int64_t> segment_indices =
-      lane_segment_context.select_route_segment_indices(
-        seq.route, center_x, center_y, center_z, NUM_SEGMENTS_IN_ROUTE);
+    const std::vector<int64_t> segment_indices = lane_segment_context.select_route_segment_indices(
+      seq.route, center_x, center_y, center_z, NUM_SEGMENTS_IN_ROUTE);
     const auto [route_lanes, route_lanes_speed_limit] =
       lane_segment_context.create_tensor_data_from_indices(
         map2bl, traffic_light_id_map, segment_indices, NUM_SEGMENTS_IN_ROUTE);
@@ -267,8 +266,8 @@ void process_sequence(
 
     std::vector<int32_t> turn_indicators(INPUT_T_WITH_CURRENT);
     for (int64_t t = 0; t < INPUT_T_WITH_CURRENT; ++t) {
-      turn_indicators[t] = seq.data_list[std::max(int64_t(0), i - INPUT_T_WITH_CURRENT + 1 + t)]
-                             .turn_indicator.report;
+      turn_indicators[t] =
+        seq.data_list[std::max(int64_t(0), i - INPUT_T_WITH_CURRENT + 1 + t)].turn_indicator.report;
     }
 
     // Decide whether this frame is skipped and why. Reasons are evaluated in
@@ -289,15 +288,17 @@ void process_sequence(
       const double sustained_s =
         static_cast<double>(no_future_progress_count * options.step) / 10.0;
       skipping_info = SkippingInfo::no_future_progress(sustained_s);
-    } else if (const frame_filters::CollisionResult collision = frame_filters::check_collision(
-                 ego_future, options.ego_shape, static_objects, neighbor_future, neighbor_past,
-                 line_strings, options.static_object_margin, options.neighbor_margin,
-                 options.road_border_margin, options.collision_time_stride);
-               collision.collided()) {
+    } else if (
+      const frame_filters::CollisionResult collision = frame_filters::check_collision(
+        ego_future, options.ego_shape, static_objects, neighbor_future, neighbor_past, line_strings,
+        options.static_object_margin, options.neighbor_margin, options.road_border_margin,
+        options.collision_time_stride);
+      collision.collided()) {
       skipping_info = SkippingInfo::collision(collision.reasons);
-    } else if (const frame_filters::OffLaneResult offlane = frame_filters::compute_offlane_score(
-                 ego_future, lanes, options.offlane_time_stride);
-               frame_filters::is_off_lane(offlane, options.offlane_max_score)) {
+    } else if (
+      const frame_filters::OffLaneResult offlane =
+        frame_filters::compute_offlane_score(ego_future, lanes, options.offlane_time_stride);
+      frame_filters::is_off_lane(offlane, options.offlane_max_score)) {
       skipping_info = SkippingInfo::off_lane(offlane.mean_distance, offlane.max_distance);
     }
 

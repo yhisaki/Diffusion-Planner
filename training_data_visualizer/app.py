@@ -48,7 +48,9 @@ class TrainingDataViewer:
         time_step: int = 0,
         show_augmented: bool = False,
         augmentation_seed: int = 0,
-    ) -> tuple[go.Figure, go.Figure, go.Figure, go.Figure, go.Figure, go.Figure, str, str, str, int]:
+    ) -> tuple[
+        go.Figure, go.Figure, go.Figure, go.Figure, go.Figure, go.Figure, str, str, str, int
+    ]:
         """Load data for current index and return UI outputs."""
         if not self.npz_paths:
             return (
@@ -96,7 +98,18 @@ class TrainingDataViewer:
         else:
             ego_state_str = self._format_ego_state(ego_state)
 
-        return traj_fig, tx_fig, ty_fig, tcos_fig, tsin_fig, tdisplacement_fig, info, ego_state_str, tl_summary, idx
+        return (
+            traj_fig,
+            tx_fig,
+            ty_fig,
+            tcos_fig,
+            tsin_fig,
+            tdisplacement_fig,
+            info,
+            ego_state_str,
+            tl_summary,
+            idx,
+        )
 
     @staticmethod
     def _format_ego_state(state: np.ndarray) -> str:
@@ -137,7 +150,9 @@ class TrainingDataViewer:
         return str(self.npz_paths[idx])
 
 
-def _build_navigation_column(n_total: int) -> tuple[gr.Slider, list[tuple[int, gr.Button]], gr.Button, gr.Button]:
+def _build_navigation_column(
+    n_total: int,
+) -> tuple[gr.Slider, list[tuple[int, gr.Button]], gr.Button, gr.Button]:
     """Build the navigation column widgets."""
     sample_slider = gr.Slider(
         0,
@@ -227,11 +242,15 @@ def build_interface(viewer: TrainingDataViewer) -> gr.Blocks:
         with gr.Row():
             with gr.Column(scale=1):
                 gr.Markdown("### Navigation")
-                sample_slider, nav_buttons, btn_shuffle, btn_reload = _build_navigation_column(n_total)
+                sample_slider, nav_buttons, btn_shuffle, btn_reload = _build_navigation_column(
+                    n_total
+                )
                 btn_download = gr.DownloadButton("Download this NPZ")
 
                 gr.Markdown("### Display")
-                time_step_sl, show_augmented_cb, btn_resample_aug, augmentation_seed_state = _build_display_controls()
+                time_step_sl, show_augmented_cb, btn_resample_aug, augmentation_seed_state = (
+                    _build_display_controls()
+                )
 
                 gr.Markdown("### Data Info")
                 info_text = gr.Textbox(label="", interactive=False, lines=1)
@@ -247,7 +266,18 @@ def build_interface(viewer: TrainingDataViewer) -> gr.Blocks:
                 tdisplacement_plot = gr.Plot(label="t-displacement")
 
         inputs = [time_step_sl, show_augmented_cb, augmentation_seed_state]
-        outputs = [traj_plot, tx_plot, ty_plot, tcos_plot, tsin_plot, tdisplacement_plot, info_text, ego_state_text, tl_info_text, sample_slider]
+        outputs = [
+            traj_plot,
+            tx_plot,
+            ty_plot,
+            tcos_plot,
+            tsin_plot,
+            tdisplacement_plot,
+            info_text,
+            ego_state_text,
+            tl_info_text,
+            sample_slider,
+        ]
 
         _bind_events(
             viewer,

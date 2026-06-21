@@ -23,8 +23,8 @@ Architecture (Figure 2):
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
 import json
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import torch
@@ -72,13 +72,13 @@ class ExplorationPolicyConfig:
 class ExplorationPolicyOutput:
     """Output container for a single forward pass."""
 
-    eta_lat: torch.Tensor       # [B] sampled lateral eta in [-1, 1]
-    eta_lon: torch.Tensor       # [B] sampled longitudinal eta in [-1, 1]
+    eta_lat: torch.Tensor  # [B] sampled lateral eta in [-1, 1]
+    eta_lon: torch.Tensor  # [B] sampled longitudinal eta in [-1, 1]
     log_prob_lat: torch.Tensor  # [B] log probability of sampled eta_lat
     log_prob_lon: torch.Tensor  # [B] log probability of sampled eta_lon
-    value: torch.Tensor         # [B] state value estimate (Phase 2)
-    lat_dist: Beta              # Beta distribution object for eta_lat
-    lon_dist: Beta              # Beta distribution object for eta_lon
+    value: torch.Tensor  # [B] state value estimate (Phase 2)
+    lat_dist: Beta  # Beta distribution object for eta_lat
+    lon_dist: Beta  # Beta distribution object for eta_lon
 
 
 class ExplorationPolicy(nn.Module):

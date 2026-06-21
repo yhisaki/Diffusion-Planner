@@ -95,7 +95,9 @@ def _valid_xy_mask(points: np.ndarray) -> np.ndarray:
     return ~((points[..., 0] == 0) & (points[..., 1] == 0))
 
 
-def _ego_marker_pose(data: dict[str, np.ndarray], marker_step: int) -> tuple[float, float, float, str] | None:
+def _ego_marker_pose(
+    data: dict[str, np.ndarray], marker_step: int
+) -> tuple[float, float, float, str] | None:
     if marker_step <= 0:
         return None
 
@@ -687,10 +689,16 @@ def plot_tx(data: dict[str, np.ndarray]) -> go.Figure:
     past_result = _past_positions(data)
     if past_result is not None:
         t, positions = past_result
-        fig.add_trace(go.Scatter(
-            x=t, y=positions[:, 0], mode="lines+markers", name="Past X",
-            line=dict(color="orange", width=2), marker=dict(size=3),
-        ))
+        fig.add_trace(
+            go.Scatter(
+                x=t,
+                y=positions[:, 0],
+                mode="lines+markers",
+                name="Past X",
+                line=dict(color="orange", width=2),
+                marker=dict(size=3),
+            )
+        )
         has_data = True
 
     if "ego_agent_future" in data:
@@ -698,10 +706,16 @@ def plot_tx(data: dict[str, np.ndarray]) -> go.Figure:
         future = data["ego_agent_future"].reshape(-1, data["ego_agent_future"].shape[-1])
         positions = np.vstack([[ego_state[0], ego_state[1]], future[:, :2]])
         t = np.arange(len(positions))
-        fig.add_trace(go.Scatter(
-            x=t, y=positions[:, 0], mode="lines+markers", name="Future X",
-            line=dict(color="black", width=2), marker=dict(size=3),
-        ))
+        fig.add_trace(
+            go.Scatter(
+                x=t,
+                y=positions[:, 0],
+                mode="lines+markers",
+                name="Future X",
+                line=dict(color="black", width=2),
+                marker=dict(size=3),
+            )
+        )
         has_data = True
 
     if not has_data:
@@ -726,10 +740,16 @@ def plot_ty(data: dict[str, np.ndarray]) -> go.Figure:
     past_result = _past_positions(data)
     if past_result is not None:
         t, positions = past_result
-        fig.add_trace(go.Scatter(
-            x=t, y=positions[:, 1], mode="lines+markers", name="Past Y",
-            line=dict(color="orange", width=2), marker=dict(size=3),
-        ))
+        fig.add_trace(
+            go.Scatter(
+                x=t,
+                y=positions[:, 1],
+                mode="lines+markers",
+                name="Past Y",
+                line=dict(color="orange", width=2),
+                marker=dict(size=3),
+            )
+        )
         has_data = True
 
     if "ego_agent_future" in data:
@@ -737,10 +757,16 @@ def plot_ty(data: dict[str, np.ndarray]) -> go.Figure:
         future = data["ego_agent_future"].reshape(-1, data["ego_agent_future"].shape[-1])
         positions = np.vstack([[ego_state[0], ego_state[1]], future[:, :2]])
         t = np.arange(len(positions))
-        fig.add_trace(go.Scatter(
-            x=t, y=positions[:, 1], mode="lines+markers", name="Future Y",
-            line=dict(color="black", width=2), marker=dict(size=3),
-        ))
+        fig.add_trace(
+            go.Scatter(
+                x=t,
+                y=positions[:, 1],
+                mode="lines+markers",
+                name="Future Y",
+                line=dict(color="black", width=2),
+                marker=dict(size=3),
+            )
+        )
         has_data = True
 
     if not has_data:
@@ -765,19 +791,31 @@ def plot_tcos(data: dict[str, np.ndarray]) -> go.Figure:
     past_result = _past_heading_cos_sin(data)
     if past_result is not None:
         t, cos_vals, _ = past_result
-        fig.add_trace(go.Scatter(
-            x=t, y=cos_vals, mode="lines+markers", name="Past cos",
-            line=dict(color="orange", width=2), marker=dict(size=3),
-        ))
+        fig.add_trace(
+            go.Scatter(
+                x=t,
+                y=cos_vals,
+                mode="lines+markers",
+                name="Past cos",
+                line=dict(color="orange", width=2),
+                marker=dict(size=3),
+            )
+        )
         has_data = True
 
     future_result = _future_heading_cos_sin(data)
     if future_result is not None:
         t, cos_vals, _ = future_result
-        fig.add_trace(go.Scatter(
-            x=t, y=cos_vals, mode="lines+markers", name="Future cos",
-            line=dict(color="black", width=2), marker=dict(size=3),
-        ))
+        fig.add_trace(
+            go.Scatter(
+                x=t,
+                y=cos_vals,
+                mode="lines+markers",
+                name="Future cos",
+                line=dict(color="black", width=2),
+                marker=dict(size=3),
+            )
+        )
         has_data = True
 
     if not has_data:
@@ -802,19 +840,31 @@ def plot_tsin(data: dict[str, np.ndarray]) -> go.Figure:
     past_result = _past_heading_cos_sin(data)
     if past_result is not None:
         t, _, sin_vals = past_result
-        fig.add_trace(go.Scatter(
-            x=t, y=sin_vals, mode="lines+markers", name="Past sin",
-            line=dict(color="orange", width=2), marker=dict(size=3),
-        ))
+        fig.add_trace(
+            go.Scatter(
+                x=t,
+                y=sin_vals,
+                mode="lines+markers",
+                name="Past sin",
+                line=dict(color="orange", width=2),
+                marker=dict(size=3),
+            )
+        )
         has_data = True
 
     future_result = _future_heading_cos_sin(data)
     if future_result is not None:
         t, _, sin_vals = future_result
-        fig.add_trace(go.Scatter(
-            x=t, y=sin_vals, mode="lines+markers", name="Future sin",
-            line=dict(color="black", width=2), marker=dict(size=3),
-        ))
+        fig.add_trace(
+            go.Scatter(
+                x=t,
+                y=sin_vals,
+                mode="lines+markers",
+                name="Future sin",
+                line=dict(color="black", width=2),
+                marker=dict(size=3),
+            )
+        )
         has_data = True
 
     if not has_data:
@@ -842,10 +892,16 @@ def plot_tdisplacement(data: dict[str, np.ndarray]) -> go.Figure:
             displacements = np.linalg.norm(np.diff(past[:, :2].astype(np.float64), axis=0), axis=1)
             speed = displacements / 0.1
             t = np.arange(-len(speed), 0)
-            fig.add_trace(go.Scatter(
-                x=t, y=speed, mode="lines+markers", name="Past speed",
-                line=dict(color="orange", width=2), marker=dict(size=3),
-            ))
+            fig.add_trace(
+                go.Scatter(
+                    x=t,
+                    y=speed,
+                    mode="lines+markers",
+                    name="Past speed",
+                    line=dict(color="orange", width=2),
+                    marker=dict(size=3),
+                )
+            )
             has_data = True
 
     if not has_data:

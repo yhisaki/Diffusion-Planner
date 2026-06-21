@@ -17,14 +17,15 @@ Usage:
         --model_a <baseline.pth> --model_b <trained.pth> \
         --scenes scene_0038.npz --output_dir /path/out --make_webm
 """
+
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
 
 import torch
-from preference_optimization.utils import load_npz_data
 
+from preference_optimization.utils import load_npz_data
 from rlvr.autoresearch.tools.ghost_sim_common import (
     GhostSimConfig,
     extract_stopped_neighbors,
@@ -35,7 +36,8 @@ from rlvr.autoresearch.tools.ghost_sim_common import (
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--model_a", required=True, help="First model (e.g. baseline)")
     parser.add_argument("--lora_a", default=None)
     parser.add_argument("--label_a", default="baseline")
@@ -47,12 +49,17 @@ def main() -> None:
     parser.add_argument("--steps", type=int, default=80)
     parser.add_argument("--advance_k", type=int, default=0)
     parser.add_argument("--view_half_m", type=float, default=30.0)
-    parser.add_argument("--ego_wheelbase", type=float, default=4.76,
-                        help="Ego wheelbase (m); ego footprint is rear-axle offset by (length-wheelbase)/2")
+    parser.add_argument(
+        "--ego_wheelbase",
+        type=float,
+        default=4.76,
+        help="Ego wheelbase (m); ego footprint is rear-axle offset by (length-wheelbase)/2",
+    )
     parser.add_argument("--make_webm", action="store_true")
     parser.add_argument("--webm_fps", type=int, default=10)
-    parser.add_argument("--show_lateral", action="store_true",
-                        help="Show lateral offset to route centerline")
+    parser.add_argument(
+        "--show_lateral", action="store_true", help="Show lateral offset to route centerline"
+    )
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -88,8 +95,10 @@ def main() -> None:
 
         run_ghost_sim(
             scene_path=scene_path,
-            model_a=model_a, model_a_args=args_a,
-            model_b=model_b, model_b_args=args_b,
+            model_a=model_a,
+            model_a_args=args_a,
+            model_b=model_b,
+            model_b_args=args_b,
             scene_data=data,
             output_dir=scene_out,
             cfg=cfg,

@@ -258,12 +258,14 @@ def model_training(args):
     if not trainable_parameters:
         raise RuntimeError("No trainable parameters found")
 
-    optimizer = optim.AdamW([
-        {
-            "params": trainable_parameters,
-            "lr": args.learning_rate,
-        }
-    ])
+    optimizer = optim.AdamW(
+        [
+            {
+                "params": trainable_parameters,
+                "lr": args.learning_rate,
+            }
+        ]
+    )
 
     if args.warmup_steps < 0:
         raise ValueError("warmup_steps must be non-negative")

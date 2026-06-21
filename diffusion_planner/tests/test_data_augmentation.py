@@ -1,5 +1,4 @@
 import numpy as np
-
 from diffusion_planner.utils.data_augmentation import EgoPerturbation, StatePerturbation
 
 
@@ -139,7 +138,9 @@ def test_speed_perturbation_affects_augmented_future():
     data2["ego_agent_future"][:, 2] = 0.0
     result_with_speed = aug_with_speed(data2)
 
-    assert not np.allclose(result_no_speed["ego_agent_future"], result_with_speed["ego_agent_future"])
+    assert not np.allclose(
+        result_no_speed["ego_agent_future"], result_with_speed["ego_agent_future"]
+    )
 
 
 def test_default_wheel_base_is_configurable_when_ego_shape_missing():

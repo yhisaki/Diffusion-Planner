@@ -320,21 +320,13 @@ class SpawnConfig:
                 f"(wheelbase={self.ego_wheelbase}, length={self.ego_length})"
             )
         if not 0 < self.ego_max_steer < math.pi / 2:
-            raise ValueError(
-                f"ego_max_steer must be in (0, pi/2); got {self.ego_max_steer}"
-            )
+            raise ValueError(f"ego_max_steer must be in (0, pi/2); got {self.ego_max_steer}")
         if self.inference_delay < 0:
-            raise ValueError(
-                f"inference_delay must be non-negative; got {self.inference_delay}"
-            )
+            raise ValueError(f"inference_delay must be non-negative; got {self.inference_delay}")
         if self.max_steps < 1:
-            raise ValueError(
-                f"max_steps must be >= 1; got {self.max_steps}"
-            )
+            raise ValueError(f"max_steps must be >= 1; got {self.max_steps}")
         if self.ego_init_speed is not None and self.ego_init_speed < 0:
-            raise ValueError(
-                f"ego_init_speed must be >= 0 when set; got {self.ego_init_speed}"
-            )
+            raise ValueError(f"ego_init_speed must be >= 0 when set; got {self.ego_init_speed}")
         if self.dump_npz_dir and self.dump_neighbor_count < 1:
             raise ValueError(
                 f"dump_neighbor_count must be >= 1 when dumping NPZs; "
@@ -346,9 +338,7 @@ class SpawnConfig:
                 "per-step metrics need thresholds that match the training "
                 "reward function (no silent defaults)."
             )
-        if self.overlay_metrics_on_png and (
-            not self.dump_npz_dir or not self.reward_config_path
-        ):
+        if self.overlay_metrics_on_png and (not self.dump_npz_dir or not self.reward_config_path):
             raise ValueError(
                 "overlay_metrics_on_png requires both dump_npz_dir and "
                 "reward_config_path; the overlay renders the live rb / cl "
@@ -363,8 +353,7 @@ class SpawnConfig:
             )
         if self.parked_vehicle_visibility_m <= 0:
             raise ValueError(
-                f"parked_vehicle_visibility_m must be > 0; "
-                f"got {self.parked_vehicle_visibility_m}"
+                f"parked_vehicle_visibility_m must be > 0; got {self.parked_vehicle_visibility_m}"
             )
 
     @classmethod
@@ -522,8 +511,7 @@ class SceneNPCManager:
 
         # --- Spawn pass ---
         active_nb = sum(
-            1 for a in scene.agents
-            if a.id != scene.ego_agent_id and not self.is_static_npc(a.id)
+            1 for a in scene.agents if a.id != scene.ego_agent_id and not self.is_static_npc(a.id)
         )
         if active_nb >= self.cfg.max_active_npcs:
             return
@@ -547,11 +535,13 @@ class SceneNPCManager:
         ego_forward = np.array([math.cos(ego_heading), math.sin(ego_heading)], dtype=np.float32)
 
         candidate_ids = self.builder.lanelets_near_point(
-            ego_pos, self.cfg.max_spawn_distance,
+            ego_pos,
+            self.cfg.max_spawn_distance,
         )
         # Drop lanelets that are too curved for history synthesis.
         candidate_ids = [
-            ll_id for ll_id in candidate_ids
+            ll_id
+            for ll_id in candidate_ids
             if self.builder.is_lanelet_straight(ll_id, self.cfg.curvature_threshold)
         ]
         if not candidate_ids:
@@ -571,8 +561,11 @@ class SceneNPCManager:
         # Existing agents' OBBs to collision-test against.
         existing_corners = [
             _obb_corners(
-                a.current_position[0], a.current_position[1],
-                a.current_heading, a.length, a.width,
+                a.current_position[0],
+                a.current_position[1],
+                a.current_heading,
+                a.length,
+                a.width,
                 wheelbase=None if self.is_static_npc(a.id) else a.wheelbase,
             )
             for a in scene.agents
@@ -583,8 +576,10 @@ class SceneNPCManager:
             # Skip lanelets that ARE traffic-light-controlled (inside the
             # intersection). Spawning is allowed on lanelets *before* the
             # intersection; speed is adjusted below based on TL state.
-            if self.tl_controller is not None and \
-               self.tl_controller.get_group_for_lanelet(ll_id) is not None:
+            if (
+                self.tl_controller is not None
+                and self.tl_controller.get_group_for_lanelet(ll_id) is not None
+            ):
                 continue
             c = self.builder._cache[ll_id]
             cl = c.raw_centerline
@@ -663,7 +658,9 @@ class SceneNPCManager:
             route_lanes, route_sl, route_hsl = self.builder._route_to_33dim(route_ll_ids)
             if self.tl_controller is not None:
                 self.tl_controller.write_to_route_lanes(
-                    route_lanes, route_ll_ids, self._sim_time,
+                    route_lanes,
+                    route_ll_ids,
+                    self._sim_time,
                 )
 
             # Reject spawn if too close to a red light on its route.
@@ -671,7 +668,10 @@ class SceneNPCManager:
                 continue
 
             history, history_ll_ids = self.builder.generate_history(
-                pos, heading, speed, ll_id,
+                pos,
+                heading,
+                speed,
+                ll_id,
             )
             velocities = np.zeros((history.shape[0], 2), dtype=np.float32)
             for k in range(1, history.shape[0]):
@@ -688,10 +688,16 @@ class SceneNPCManager:
             )
             yaw_rate_spawn = float(dh_spawn.mean() / 0.1) if len(dh_spawn) > 0 else 0.0
             speed_spawn = float(np.linalg.norm(velocities[-1]))
-            accel_spawn = (velocities[-1] - velocities[-3]) / (2 * 0.1) \
-                if len(velocities) >= 3 else np.zeros(2, dtype=np.float32)
-            steering_spawn = float(math.atan2(wheelbase * yaw_rate_spawn, max(speed_spawn, 0.2))) \
-                if speed_spawn > 0.2 else 0.0
+            accel_spawn = (
+                (velocities[-1] - velocities[-3]) / (2 * 0.1)
+                if len(velocities) >= 3
+                else np.zeros(2, dtype=np.float32)
+            )
+            steering_spawn = (
+                float(math.atan2(wheelbase * yaw_rate_spawn, max(speed_spawn, 0.2)))
+                if speed_spawn > 0.2
+                else 0.0
+            )
 
             agent_id = f"npc_{self._next_id}"
             self._next_id += 1
@@ -741,6 +747,7 @@ class SceneNPCManager:
         and confuses the ego.
         """
         from scenario_generation.traffic_light import TL_RED, TL_YELLOW
+
         tl = self.tl_controller
         if tl is None:
             return False
@@ -791,9 +798,7 @@ class SceneNPCManager:
 
         spacing = float(self.cfg.static_npc_spacing_m)
         if spacing <= 0:
-            raise ValueError(
-                f"static_npc_spacing_m must be > 0; got {spacing}"
-            )
+            raise ValueError(f"static_npc_spacing_m must be > 0; got {spacing}")
 
         seed = self.cfg.static_npc_seed
         if seed is None:
@@ -843,9 +848,14 @@ class SceneNPCManager:
         # left/right boundaries at a given route-wide arc length. Each
         # entry carries (lanelet_id, per-lanelet arc lengths offset to the
         # route frame, centerline xy, (left_boundary xy, right_boundary xy)).
-        lanelet_cl_arcs: list[tuple[
-            int, np.ndarray, np.ndarray, tuple[np.ndarray, np.ndarray],
-        ]] = []
+        lanelet_cl_arcs: list[
+            tuple[
+                int,
+                np.ndarray,
+                np.ndarray,
+                tuple[np.ndarray, np.ndarray],
+            ]
+        ] = []
         offset = 0.0
         for ll_id in self.ego_route_ll_ids:
             if ll_id not in self.builder._cache:
@@ -887,8 +897,11 @@ class SceneNPCManager:
         added = 0
         existing_corners = [
             _obb_corners(
-                a.current_position[0], a.current_position[1],
-                a.current_heading, a.length, a.width,
+                a.current_position[0],
+                a.current_position[1],
+                a.current_heading,
+                a.length,
+                a.width,
                 wheelbase=None if self.is_static_npc(a.id) else a.wheelbase,
             )
             for a in scene.agents
@@ -970,12 +983,16 @@ class SceneNPCManager:
             added += 1
 
         if added > 0:
-            print(f"  [NPCManager] prepopulated {added} static NPC(s) "
-                  f"(spacing≈{spacing:.0f} m, margin={self.cfg.static_npc_shoulder_margin_m:.2f} m)")
+            print(
+                f"  [NPCManager] prepopulated {added} static NPC(s) "
+                f"(spacing≈{spacing:.0f} m, margin={self.cfg.static_npc_shoulder_margin_m:.2f} m)"
+            )
         return added
 
     def inject_parked_vehicles_from_yaml(
-        self, scene: "SceneContext", yaml_path: str,
+        self,
+        scene: "SceneContext",
+        yaml_path: str,
     ) -> int:
         """Load real parked vehicles from a YAML into a visibility pool.
 
@@ -1043,12 +1060,17 @@ class SceneNPCManager:
                 per_veh_radius = float(per_veh_radius)
             self._parked_vehicle_pool.append((world_pos, agent, per_veh_radius))
 
-        print(f"  [NPCManager] loaded {len(self._parked_vehicle_pool)} parked vehicle(s) "
-              f"into visibility pool from {yaml_path}")
+        print(
+            f"  [NPCManager] loaded {len(self._parked_vehicle_pool)} parked vehicle(s) "
+            f"into visibility pool from {yaml_path}"
+        )
         return len(self._parked_vehicle_pool)
 
     def update_parked_visibility(
-        self, scene: "SceneContext", ego_pos: np.ndarray, radius_m: float,
+        self,
+        scene: "SceneContext",
+        ego_pos: np.ndarray,
+        radius_m: float,
     ) -> None:
         """Add/remove pooled parked vehicles based on distance to ego.
 
@@ -1159,20 +1181,35 @@ def _draw_lane_network(ax, map_data, alpha: float = 0.7) -> None:
             rights.append((pts + lane[:, 6:8])[valid])
 
     if centerlines:
-        ax.add_collection(LineCollection(
-            centerlines, colors=_LANE_COLOR, linewidths=0.6,
-            alpha=alpha * 0.4, zorder=1,
-        ))
+        ax.add_collection(
+            LineCollection(
+                centerlines,
+                colors=_LANE_COLOR,
+                linewidths=0.6,
+                alpha=alpha * 0.4,
+                zorder=1,
+            )
+        )
     if lefts:
-        ax.add_collection(LineCollection(
-            lefts, colors=_LANE_BORDER_COLOR, linewidths=1.1,
-            alpha=alpha, zorder=2,
-        ))
+        ax.add_collection(
+            LineCollection(
+                lefts,
+                colors=_LANE_BORDER_COLOR,
+                linewidths=1.1,
+                alpha=alpha,
+                zorder=2,
+            )
+        )
     if rights:
-        ax.add_collection(LineCollection(
-            rights, colors=_LANE_BORDER_COLOR, linewidths=1.1,
-            alpha=alpha, zorder=2,
-        ))
+        ax.add_collection(
+            LineCollection(
+                rights,
+                colors=_LANE_BORDER_COLOR,
+                linewidths=1.1,
+                alpha=alpha,
+                zorder=2,
+            )
+        )
 
 
 def _draw_road_borders(ax, road_border_polylines, view_center=None, view_half_m=None) -> None:
@@ -1183,6 +1220,7 @@ def _draw_road_borders(ax, road_border_polylines, view_center=None, view_half_m=
     if not road_border_polylines:
         return
     from matplotlib.collections import LineCollection
+
     # AABB filter to avoid drawing the whole map each tick
     if view_center is not None and view_half_m is not None:
         cx, cy = view_center
@@ -1192,8 +1230,10 @@ def _draw_road_borders(ax, road_border_polylines, view_center=None, view_half_m=
             if pl.shape[0] < 2:
                 continue
             in_view = (
-                (pl[:, 0] >= cx - half) & (pl[:, 0] <= cx + half)
-                & (pl[:, 1] >= cy - half) & (pl[:, 1] <= cy + half)
+                (pl[:, 0] >= cx - half)
+                & (pl[:, 0] <= cx + half)
+                & (pl[:, 1] >= cy - half)
+                & (pl[:, 1] <= cy + half)
             )
             if in_view.any():
                 filtered.append(pl)
@@ -1202,10 +1242,15 @@ def _draw_road_borders(ax, road_border_polylines, view_center=None, view_half_m=
         polylines = [pl for pl in road_border_polylines if pl.shape[0] >= 2]
     if not polylines:
         return
-    ax.add_collection(LineCollection(
-        polylines, colors=_ROAD_BORDER_COLOR, linewidths=2.0,
-        alpha=0.9, zorder=5,  # above lanes, below agents
-    ))
+    ax.add_collection(
+        LineCollection(
+            polylines,
+            colors=_ROAD_BORDER_COLOR,
+            linewidths=2.0,
+            alpha=0.9,
+            zorder=5,  # above lanes, below agents
+        )
+    )
 
 
 def _nearest_border_point(
@@ -1232,8 +1277,7 @@ def _nearest_border_point(
         seg = p2 - p1
         seg_len2 = (seg * seg).sum(axis=1)
         seg_len2[seg_len2 < 1e-9] = 1e-9
-        t = (((px - p1[:, 0]) * seg[:, 0] + (py - p1[:, 1]) * seg[:, 1])
-             / seg_len2)
+        t = ((px - p1[:, 0]) * seg[:, 0] + (py - p1[:, 1]) * seg[:, 1]) / seg_len2
         t = np.clip(t, 0.0, 1.0)
         closest = p1 + t[:, None] * seg
         dists = np.hypot(closest[:, 0] - px, closest[:, 1] - py)
@@ -1245,7 +1289,11 @@ def _nearest_border_point(
 
 
 def _ego_obb_corners(
-    ex: float, ey: float, heading: float, length: float, width: float,
+    ex: float,
+    ey: float,
+    heading: float,
+    length: float,
+    width: float,
     wheelbase: float | None = None,
 ) -> np.ndarray:
     """Four OBB corners of the ego footprint in world frame.
@@ -1280,7 +1328,8 @@ def _ego_nearest_static_npc(
     ego_pos = ego.current_position
     reach = threshold_m + float(ego.length)
     candidates = [
-        a for a in static_agents
+        a
+        for a in static_agents
         if float(np.linalg.norm(a.current_position - ego_pos)) <= reach + float(a.length)
     ]
     if not candidates:
@@ -1290,14 +1339,20 @@ def _ego_nearest_static_npc(
     from rlvr.reward import _closest_points_between_rects
 
     ego_corners = _obb_corners(
-        float(ego_pos[0]), float(ego_pos[1]),
-        float(ego.current_heading), float(ego.length), float(ego.width),
+        float(ego_pos[0]),
+        float(ego_pos[1]),
+        float(ego.current_heading),
+        float(ego.length),
+        float(ego.width),
         wheelbase=float(ego.wheelbase),
     )
     npc_corners_list = [
         _obb_corners(
-            float(a.current_position[0]), float(a.current_position[1]),
-            float(a.current_heading), float(a.length), float(a.width),
+            float(a.current_position[0]),
+            float(a.current_position[1]),
+            float(a.current_heading),
+            float(a.length),
+            float(a.width),
         )
         for a in candidates
     ]
@@ -1311,7 +1366,9 @@ def _ego_nearest_static_npc(
     if d_best >= threshold_m:
         return None
     return (
-        pt_e[i_best].numpy(), pt_n[i_best].numpy(), d_best,
+        pt_e[i_best].numpy(),
+        pt_n[i_best].numpy(),
+        d_best,
         candidates[i_best].id,
     )
 
@@ -1325,7 +1382,8 @@ def _ego_nearest_moving_npc(
     if ego is None:
         return None
     moving = [
-        a for a in scene.agents
+        a
+        for a in scene.agents
         if a.id != scene.ego_agent_id and not SceneNPCManager.is_static_npc(a.id)
     ]
     if not moving:
@@ -1334,7 +1392,8 @@ def _ego_nearest_moving_npc(
     ego_pos = ego.current_position
     reach = threshold_m + float(ego.length)
     candidates = [
-        a for a in moving
+        a
+        for a in moving
         if float(np.linalg.norm(a.current_position - ego_pos)) <= reach + float(a.length)
     ]
     if not candidates:
@@ -1343,14 +1402,20 @@ def _ego_nearest_moving_npc(
     from rlvr.reward import _closest_points_between_rects
 
     ego_corners = _obb_corners(
-        float(ego_pos[0]), float(ego_pos[1]),
-        float(ego.current_heading), float(ego.length), float(ego.width),
+        float(ego_pos[0]),
+        float(ego_pos[1]),
+        float(ego.current_heading),
+        float(ego.length),
+        float(ego.width),
         wheelbase=float(ego.wheelbase),
     )
     npc_corners_list = [
         _obb_corners(
-            float(a.current_position[0]), float(a.current_position[1]),
-            float(a.current_heading), float(a.length), float(a.width),
+            float(a.current_position[0]),
+            float(a.current_position[1]),
+            float(a.current_heading),
+            float(a.length),
+            float(a.width),
         )
         for a in candidates
     ]
@@ -1364,7 +1429,9 @@ def _ego_nearest_moving_npc(
     if d_best >= threshold_m:
         return None
     return (
-        pt_e[i_best].numpy(), pt_n[i_best].numpy(), d_best,
+        pt_e[i_best].numpy(),
+        pt_n[i_best].numpy(),
+        d_best,
         candidates[i_best].id,
     )
 
@@ -1385,8 +1452,11 @@ def _ego_border_distance(
     if border_pt is None:
         return None
     corners = _ego_obb_corners(
-        float(ego.current_position[0]), float(ego.current_position[1]),
-        float(ego.current_heading), float(ego.length), float(ego.width),
+        float(ego.current_position[0]),
+        float(ego.current_position[1]),
+        float(ego.current_heading),
+        float(ego.length),
+        float(ego.width),
         wheelbase=float(ego.wheelbase),
     )
     d_corner = np.hypot(corners[:, 0] - border_pt[0], corners[:, 1] - border_pt[1])
@@ -1427,16 +1497,20 @@ def save_step_figure(
     _draw_lane_network(ax, scene.map_data)
 
     # 1b) Road borders (curbs/walls) from the lanelet map, drawn in red.
-    _draw_road_borders(ax, road_border_polylines, view_center=(ex, ey),
-                       view_half_m=view_half_m)
+    _draw_road_borders(ax, road_border_polylines, view_center=(ex, ey), view_half_m=view_half_m)
 
     # 2) Ego route polyline (drawn below agents but above lanes).
     if route_polylines:
         for pl in route_polylines:
             if pl.shape[0] >= 2:
                 ax.plot(
-                    pl[:, 0], pl[:, 1], "-", color=_ROUTE_COLOR,
-                    lw=2.5, alpha=0.6, zorder=3,
+                    pl[:, 0],
+                    pl[:, 1],
+                    "-",
+                    color=_ROUTE_COLOR,
+                    lw=2.5,
+                    alpha=0.6,
+                    zorder=3,
                 )
 
     # 2b) Traffic-light coloured overlay on ALL lanes in map_data that have
@@ -1450,6 +1524,7 @@ def save_step_figure(
     from matplotlib.collections import LineCollection
 
     from scenario_generation.traffic_light import TL_HEX, TL_NONE
+
     tl_segments: dict[str, list[np.ndarray]] = {}  # hex → list of polylines
     lanes = scene.map_data.lanes
     for i in range(lanes.shape[0]):
@@ -1472,10 +1547,15 @@ def save_step_figure(
         tl_segments.setdefault(hex_color, []).append(pts[valid])
 
     for hex_color, segs in tl_segments.items():
-        ax.add_collection(LineCollection(
-            segs, colors=hex_color, linewidths=2.5,
-            alpha=0.85, zorder=4,
-        ))
+        ax.add_collection(
+            LineCollection(
+                segs,
+                colors=hex_color,
+                linewidths=2.5,
+                alpha=0.85,
+                zorder=4,
+            )
+        )
 
     # 3) Agents + per-agent predicted trajectories.
     # Assign colors by hashing the agent id (or extracting a stable numeric
@@ -1509,29 +1589,46 @@ def save_step_figure(
         valid = np.abs(past[:, :2]).sum(axis=1) > 1e-6
         if valid.sum() > 1:
             ax.plot(
-                past[valid, 0], past[valid, 1], "--", color=color,
-                lw=0.9, alpha=0.5, zorder=7,
+                past[valid, 0],
+                past[valid, 1],
+                "--",
+                color=color,
+                lw=0.9,
+                alpha=0.5,
+                zorder=7,
             )
 
         # Bounding box + heading arrow.
         draw_agent_box(
-            ax, pos[0], pos[1], heading, agent.length, agent.width,
-            color, alpha=0.85 if is_ego else 0.55, lw=2 if is_ego else 1,
+            ax,
+            pos[0],
+            pos[1],
+            heading,
+            agent.length,
+            agent.width,
+            color,
+            alpha=0.85 if is_ego else 0.55,
+            lw=2 if is_ego else 1,
             zorder=20 if is_ego else 15,
             wheelbase=agent.wheelbase if is_ego else None,
         )
         arrow_len = max(agent.length, 2.5)
         ax.annotate(
             "",
-            xy=(pos[0] + arrow_len * math.cos(heading),
-                pos[1] + arrow_len * math.sin(heading)),
+            xy=(pos[0] + arrow_len * math.cos(heading), pos[1] + arrow_len * math.sin(heading)),
             xytext=(pos[0], pos[1]),
             arrowprops=dict(arrowstyle="-|>", color=color, lw=1.5, mutation_scale=12),
             zorder=21 if is_ego else 16,
         )
         ax.annotate(
-            agent.id, (pos[0], pos[1]), fontsize=7, color=color,
-            ha="center", va="bottom", xytext=(0, 6), textcoords="offset points",
+            agent.id,
+            (pos[0], pos[1]),
+            fontsize=7,
+            color=color,
+            ha="center",
+            va="bottom",
+            xytext=(0, 6),
+            textcoords="offset points",
             zorder=22,
         )
 
@@ -1539,16 +1636,22 @@ def save_step_figure(
         if agent.id in agent_predictions:
             pred = agent_predictions[agent.id]
             plan_xy, plan_h = _ego_to_world(
-                pred[:, :2], pred[:, 2:4],
-                float(pos[0]), float(pos[1]), heading,
+                pred[:, :2],
+                pred[:, 2:4],
+                float(pos[0]),
+                float(pos[1]),
+                heading,
             )
             plan_traj = np.concatenate([plan_xy, plan_h[:, np.newaxis]], axis=-1)
             draw_trajectory(
-                ax, plan_traj, color,
+                ax,
+                plan_traj,
+                color,
                 lw=1.8 if is_ego else 1.0,
                 zorder=25 if is_ego else 18,
                 show_footprints=is_ego,
-                length=agent.length, width=agent.width,
+                length=agent.length,
+                width=agent.width,
                 wheelbase=agent.wheelbase if is_ego else None,
             )
 
@@ -1556,8 +1659,16 @@ def save_step_figure(
     if ego.goal_pose is not None:
         gx, gy = float(ego.goal_pose[0]), float(ego.goal_pose[1])
         if abs(gx - ex) <= view_half_m and abs(gy - ey) <= view_half_m:
-            ax.plot(gx, gy, "*", color="#d62728", ms=18, zorder=30,
-                    markeredgecolor="black", markeredgewidth=0.8)
+            ax.plot(
+                gx,
+                gy,
+                "*",
+                color="#d62728",
+                ms=18,
+                zorder=30,
+                markeredgecolor="black",
+                markeredgewidth=0.8,
+            )
 
     # 5) Viewport: fixed square around ego.
     ax.set_xlim(ex - view_half_m, ex + view_half_m)
@@ -1565,22 +1676,24 @@ def save_step_figure(
     ax.set_aspect("equal")
     # Fixed tick spacing so the grid doesn't jitter between frames.
     from matplotlib.ticker import MultipleLocator
+
     ax.xaxis.set_major_locator(MultipleLocator(20.0))
     ax.yaxis.set_major_locator(MultipleLocator(20.0))
     ax.grid(True, alpha=0.15)
     ax.set_xlabel("X (m)")
     ax.set_ylabel("Y (m)")
 
-    goal_d = float(np.linalg.norm(ego.current_position - ego.goal_pose[:2])) \
-        if ego.goal_pose is not None else float("nan")
+    goal_d = (
+        float(np.linalg.norm(ego.current_position - ego.goal_pose[:2]))
+        if ego.goal_pose is not None
+        else float("nan")
+    )
 
     # Ego state readout: speed, steering, current turn-signal class.
     ego_speed = float(np.hypot(ego.current_velocity[0], ego.current_velocity[1]))
     ego_speed_kph = ego_speed * 3.6
     _TI_NAMES = {0: "NONE", 1: "DISABLE", 2: "LEFT", 3: "RIGHT", 4: "KEEP"}
-    ti_cls = (
-        int(ego.turn_indicators[-1]) if ego.turn_indicators is not None else 0
-    )
+    ti_cls = int(ego.turn_indicators[-1]) if ego.turn_indicators is not None else 0
     ti_label = _TI_NAMES.get(ti_cls, f"?{ti_cls}")
     # Display steering in degrees with 1-decimal precision. Under 0.5°
     # the old :+.0f° rounded to "+0°" and was mistakable for radians.
@@ -1606,18 +1719,34 @@ def save_step_figure(
     rb_info = _ego_border_distance(ego, road_border_polylines)
     if rb_info is not None:
         start, border_pt, body_d = rb_info
-        ax.plot([start[0], border_pt[0]], [start[1], border_pt[1]],
-                "k--", linewidth=1.3, alpha=0.7, zorder=29)
-        ax.plot(border_pt[0], border_pt[1], "ko", markersize=6, zorder=30,
-                markeredgecolor="white", markeredgewidth=0.8)
+        ax.plot(
+            [start[0], border_pt[0]],
+            [start[1], border_pt[1]],
+            "k--",
+            linewidth=1.3,
+            alpha=0.7,
+            zorder=29,
+        )
+        ax.plot(
+            border_pt[0],
+            border_pt[1],
+            "ko",
+            markersize=6,
+            zorder=30,
+            markeredgecolor="white",
+            markeredgewidth=0.8,
+        )
         mx, my = (start[0] + border_pt[0]) / 2, (start[1] + border_pt[1]) / 2
-        ax.annotate(f"rb {body_d:.2f}m",
-                    xy=(mx, my), fontsize=8, color="black",
-                    ha="center", va="center",
-                    bbox=dict(boxstyle="round,pad=0.2",
-                              facecolor="white", edgecolor="black",
-                              alpha=0.7),
-                    zorder=31)
+        ax.annotate(
+            f"rb {body_d:.2f}m",
+            xy=(mx, my),
+            fontsize=8,
+            color="black",
+            ha="center",
+            va="center",
+            bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="black", alpha=0.7),
+            zorder=31,
+        )
 
     # Ego ↔ nearest stopped-NPC closest-pair line. Drawn regardless of
     # whether metrics are enabled — only gate is proximity < threshold so
@@ -1627,11 +1756,25 @@ def save_step_figure(
     sc_pair = _ego_nearest_static_npc(scene, threshold_m=_STATIC_NPC_VIZ_THRESH_M)
     if sc_pair is not None:
         pt_e, pt_n, sc_d, sc_id = sc_pair
-        ax.plot([pt_e[0], pt_n[0]], [pt_e[1], pt_n[1]],
-                "-", color="#cc0000", lw=1.8, alpha=0.85, zorder=29)
-        ax.plot([pt_e[0], pt_n[0]], [pt_e[1], pt_n[1]],
-                "o", color="#cc0000", ms=5, zorder=30,
-                markeredgecolor="white", markeredgewidth=0.7)
+        ax.plot(
+            [pt_e[0], pt_n[0]],
+            [pt_e[1], pt_n[1]],
+            "-",
+            color="#cc0000",
+            lw=1.8,
+            alpha=0.85,
+            zorder=29,
+        )
+        ax.plot(
+            [pt_e[0], pt_n[0]],
+            [pt_e[1], pt_n[1]],
+            "o",
+            color="#cc0000",
+            ms=5,
+            zorder=30,
+            markeredgecolor="white",
+            markeredgewidth=0.7,
+        )
         # Offset the label perpendicular to the line so it doesn't sit on
         # top of it. 1.2 m displacement is enough to clear even a 2 m
         # separation. Compact format (just the distance) keeps the badge
@@ -1644,24 +1787,40 @@ def save_step_figure(
         else:
             nx, ny = 0.0, 1.0
         label_off = 1.2  # metres, in world units
-        ax.annotate(f"{sc_d:.2f} m",
-                    xy=(mx + nx * label_off, my + ny * label_off),
-                    fontsize=7, color="#cc0000",
-                    ha="center", va="center",
-                    bbox=dict(boxstyle="round,pad=0.1",
-                              facecolor="white", edgecolor="#cc0000",
-                              alpha=0.85),
-                    zorder=31)
+        ax.annotate(
+            f"{sc_d:.2f} m",
+            xy=(mx + nx * label_off, my + ny * label_off),
+            fontsize=7,
+            color="#cc0000",
+            ha="center",
+            va="center",
+            bbox=dict(boxstyle="round,pad=0.1", facecolor="white", edgecolor="#cc0000", alpha=0.85),
+            zorder=31,
+        )
 
     # Ego ↔ nearest moving NPC closest-pair line (blue).
     mv_pair = _ego_nearest_moving_npc(scene, threshold_m=5.0)
     if mv_pair is not None:
         pt_e, pt_n, mv_d, mv_id = mv_pair
-        ax.plot([pt_e[0], pt_n[0]], [pt_e[1], pt_n[1]],
-                "-", color="#0055cc", lw=1.8, alpha=0.85, zorder=29)
-        ax.plot([pt_e[0], pt_n[0]], [pt_e[1], pt_n[1]],
-                "o", color="#0055cc", ms=5, zorder=30,
-                markeredgecolor="white", markeredgewidth=0.7)
+        ax.plot(
+            [pt_e[0], pt_n[0]],
+            [pt_e[1], pt_n[1]],
+            "-",
+            color="#0055cc",
+            lw=1.8,
+            alpha=0.85,
+            zorder=29,
+        )
+        ax.plot(
+            [pt_e[0], pt_n[0]],
+            [pt_e[1], pt_n[1]],
+            "o",
+            color="#0055cc",
+            ms=5,
+            zorder=30,
+            markeredgecolor="white",
+            markeredgewidth=0.7,
+        )
         mx, my = (pt_e[0] + pt_n[0]) / 2, (pt_e[1] + pt_n[1]) / 2
         dx, dy = pt_n[0] - pt_e[0], pt_n[1] - pt_e[1]
         seg_len = math.hypot(dx, dy)
@@ -1669,14 +1828,16 @@ def save_step_figure(
             nx, ny = -dy / seg_len, dx / seg_len
         else:
             nx, ny = 0.0, 1.0
-        ax.annotate(f"{mv_d:.2f} m",
-                    xy=(mx + nx * 1.2, my + ny * 1.2),
-                    fontsize=7, color="#0055cc",
-                    ha="center", va="center",
-                    bbox=dict(boxstyle="round,pad=0.1",
-                              facecolor="white", edgecolor="#0055cc",
-                              alpha=0.85),
-                    zorder=31)
+        ax.annotate(
+            f"{mv_d:.2f} m",
+            xy=(mx + nx * 1.2, my + ny * 1.2),
+            fontsize=7,
+            color="#0055cc",
+            ha="center",
+            va="center",
+            bbox=dict(boxstyle="round,pad=0.1", facecolor="white", edgecolor="#0055cc", alpha=0.85),
+            zorder=31,
+        )
 
     ax.set_title(title, fontsize=10)
     fig.subplots_adjust(left=0.10, right=0.95, bottom=0.08, top=0.92)
@@ -1707,13 +1868,21 @@ def _score_step(
     depends on the training config; the heatmap wants the rear-axle
     version).
     """
+
     def _to_t(arr: np.ndarray) -> torch.Tensor:
         t = torch.from_numpy(np.asarray(arr)).float().to(device)
         return t.unsqueeze(0) if t.dim() == 3 else t
 
     d: dict[str, torch.Tensor] = {}
-    for k in ("lanes", "route_lanes", "line_strings", "ego_shape",
-              "neighbor_agents_future", "neighbor_agents_past", "goal_pose"):
+    for k in (
+        "lanes",
+        "route_lanes",
+        "line_strings",
+        "ego_shape",
+        "neighbor_agents_future",
+        "neighbor_agents_past",
+        "goal_pose",
+    ):
         if k not in npz_data:
             continue
         arr = npz_data[k]
@@ -1734,7 +1903,8 @@ def _score_step(
 
     ego_shape_cl = torch.tensor(
         [spawn_config.ego_wheelbase, spawn_config.ego_length, spawn_config.ego_width],
-        device=device, dtype=torch.float32,
+        device=device,
+        dtype=torch.float32,
     )
 
     traj = torch.zeros(1, 2, 4, device=device)
@@ -1744,7 +1914,9 @@ def _score_step(
     br = breakdowns[0]
 
     cl_baselink = compute_centerline_score_batch(
-        traj, ego_shape_cl, d,
+        traj,
+        ego_shape_cl,
+        d,
         usage_mode="baselink",
     )
 
@@ -1778,7 +1950,9 @@ def _score_step(
         pred = pred.unsqueeze(0)  # (1, T, 4)
         br_p = compute_reward_batch(pred, d, reward_cfg)[0]
         cl_p = compute_centerline_score_batch(
-            pred, ego_shape_cl, d,
+            pred,
+            ego_shape_cl,
+            d,
             usage_mode="baselink",
         )
         for k, v in asdict(br_p).items():
@@ -1819,8 +1993,8 @@ def _backfill_neighbor_futures(npz_dir: Path) -> None:
     # ── Phase 1: load ego poses and all neighbor current positions ──
     ego_poses = np.zeros((S, 3), dtype=np.float64)  # x, y, heading
     step_nums = []
-    all_nb_ego_xy = []   # list of (N, 2)
-    all_nb_ego_cs = []   # list of (N, 2) cos,sin
+    all_nb_ego_xy = []  # list of (N, 2)
+    all_nb_ego_cs = []  # list of (N, 2) cos,sin
     for fi, p in enumerate(npz_paths):
         d = np.load(p)
         nb_past = d["neighbor_agents_past"]  # (N, 31, 11)
@@ -1839,8 +2013,8 @@ def _backfill_neighbor_futures(npz_dir: Path) -> None:
     # ── Phase 2: batch ego→world transform for all neighbors ──
     N = all_nb_ego_xy[0].shape[0]  # neighbor slot count (320)
     # Stack into (S, N, 2)
-    nb_ego = np.stack(all_nb_ego_xy)       # (S, N, 2)
-    nb_cs = np.stack(all_nb_ego_cs)        # (S, N, 2)
+    nb_ego = np.stack(all_nb_ego_xy)  # (S, N, 2)
+    nb_cs = np.stack(all_nb_ego_cs)  # (S, N, 2)
     nb_head_ego = np.arctan2(nb_cs[:, :, 1], nb_cs[:, :, 0])  # (S, N)
 
     # Valid mask: neighbor slot has non-zero position
@@ -1850,12 +2024,12 @@ def _backfill_neighbor_futures(npz_dir: Path) -> None:
     cos_h = np.cos(ego_poses[:, 2])  # (S,)
     sin_h = np.sin(ego_poses[:, 2])  # (S,)
     nb_world = np.zeros_like(nb_ego)
-    nb_world[:, :, 0] = (cos_h[:, None] * nb_ego[:, :, 0]
-                          - sin_h[:, None] * nb_ego[:, :, 1]
-                          + ego_poses[:, 0:1])
-    nb_world[:, :, 1] = (sin_h[:, None] * nb_ego[:, :, 0]
-                          + cos_h[:, None] * nb_ego[:, :, 1]
-                          + ego_poses[:, 1:2])
+    nb_world[:, :, 0] = (
+        cos_h[:, None] * nb_ego[:, :, 0] - sin_h[:, None] * nb_ego[:, :, 1] + ego_poses[:, 0:1]
+    )
+    nb_world[:, :, 1] = (
+        sin_h[:, None] * nb_ego[:, :, 0] + cos_h[:, None] * nb_ego[:, :, 1] + ego_poses[:, 1:2]
+    )
     nb_world[~valid_mask] = 0
 
     # World heading per neighbor
@@ -1870,8 +2044,8 @@ def _backfill_neighbor_futures(npz_dir: Path) -> None:
         cos_inv = math.cos(-s_eh)
         sin_inv = math.sin(-s_eh)
 
-        cur_world_si = nb_world[si]       # (N, 2)
-        valid_si = valid_mask[si]          # (N,)
+        cur_world_si = nb_world[si]  # (N, 2)
+        valid_si = valid_mask[si]  # (N,)
         active = np.where(valid_si)[0]
         if len(active) == 0:
             continue
@@ -1899,7 +2073,7 @@ def _backfill_neighbor_futures(npz_dir: Path) -> None:
                     break
                 cands = nb_world[fj]
                 diffs = cands[v_fj] - prev_w
-                dists = np.sqrt(diffs[:, 0]**2 + diffs[:, 1]**2)
+                dists = np.sqrt(diffs[:, 0] ** 2 + diffs[:, 1] ** 2)
                 best = np.argmin(dists)
                 if dists[best] > match_thresh:
                     break
@@ -1973,15 +2147,20 @@ def run_route_replay(
             raise ValueError("Route has no start_lanelet_id and no resolved path")
         print("  [WARN] Route.route_lanelet_ids is empty; falling back to find_route")
         ego_route_ids = builder.find_route(
-            route.start_lanelet_id, spawn_config.npc_route_length_m,
+            route.start_lanelet_id,
+            spawn_config.npc_route_length_m,
         )
 
     # Snap the ego to a lanelet on the saved route (prevents the initial lane
     # from drifting to a parallel lane that isn't part of the route).
     start_pose = route.start_pose
-    start_ll_id = builder.snap_to_nearest_ll(
-        start_pose[:2], candidate_ids=ego_route_ids,
-    ) or route.start_lanelet_id
+    start_ll_id = (
+        builder.snap_to_nearest_ll(
+            start_pose[:2],
+            candidate_ids=ego_route_ids,
+        )
+        or route.start_lanelet_id
+    )
     if start_ll_id is None:
         raise ValueError("Could not determine start lanelet for the ego")
 
@@ -1999,7 +2178,10 @@ def run_route_replay(
 
     # Synthesise realistic history along the route's predecessor lanelets.
     history, history_ll_ids = builder.generate_history(
-        snapped_xy, heading, init_speed, start_ll_id,
+        snapped_xy,
+        heading,
+        init_speed,
+        start_ll_id,
     )
     # Override history[-1] with the user-specified heading so the ego faces
     # the right way at t=0 even when the lane heading differs slightly.
@@ -2022,7 +2204,8 @@ def run_route_replay(
         neighbor_positions: list[np.ndarray],
     ) -> list[int]:
         closest = builder.closest_lanelets(
-            ego_xy, spawn_config.max_map_lanelets,
+            ego_xy,
+            spawn_config.max_map_lanelets,
             mask_range=spawn_config.map_mask_range_m,
         )
         pinned: list[int] = list(ego_route_ids) + list(history_ll_ids)
@@ -2050,9 +2233,14 @@ def run_route_replay(
     # saved route — training data has median 4 non-zero route slots, so
     # packing all 25 over-provides context). Refreshed every
     # ``map_refresh_steps`` in the main loop as the ego advances.
-    initial_route_window = builder.select_route_segment_indices(
-        ego_route_ids, snapped_xy, max_segments=25,
-    ) or ego_route_ids[:25]
+    initial_route_window = (
+        builder.select_route_segment_indices(
+            ego_route_ids,
+            snapped_xy,
+            max_segments=25,
+        )
+        or ego_route_ids[:25]
+    )
     route_lanes, route_sl, route_hsl = builder._route_to_33dim(initial_route_window)
     # Initial kinematic derivatives from the synthesized history so the
     # first inference call sees realistic non-zero yaw_rate + steering +
@@ -2064,13 +2252,23 @@ def run_route_replay(
     )
     yaw_rate_init = float(dh_init.mean() / 0.1) if len(dh_init) > 0 else 0.0
     speed_init = float(np.linalg.norm(velocities[-1]))
-    accel_init = (velocities[-1] - velocities[-3]) / (2 * 0.1) if len(velocities) >= 3 else np.zeros(2, dtype=np.float32)
-    steering_init = float(math.atan2(spawn_config.ego_wheelbase * yaw_rate_init, max(speed_init, 0.2))) if speed_init > 0.2 else 0.0
+    accel_init = (
+        (velocities[-1] - velocities[-3]) / (2 * 0.1)
+        if len(velocities) >= 3
+        else np.zeros(2, dtype=np.float32)
+    )
+    steering_init = (
+        float(math.atan2(spawn_config.ego_wheelbase * yaw_rate_init, max(speed_init, 0.2)))
+        if speed_init > 0.2
+        else 0.0
+    )
 
     ego = Agent(
         id="ego",
         agent_type=AgentType.VEHICLE,
-        length=spawn_config.ego_length, width=spawn_config.ego_width, wheelbase=spawn_config.ego_wheelbase,
+        length=spawn_config.ego_length,
+        width=spawn_config.ego_width,
+        wheelbase=spawn_config.ego_wheelbase,
         past_trajectory=history,
         past_velocities=velocities,
         acceleration=accel_init.astype(np.float32),
@@ -2091,24 +2289,23 @@ def run_route_replay(
 
     # Route polyline (world frame) for per-step visualisation. Keep the
     # lanelet ID list in sync so the TL overlay can colour each segment.
-    _route_vis_ll_ids: list[int] = [
-        ll_id for ll_id in ego_route_ids if ll_id in builder._cache
-    ]
-    route_polylines = [
-        builder._cache[ll_id].raw_centerline[:, :2]
-        for ll_id in _route_vis_ll_ids
-    ]
+    _route_vis_ll_ids: list[int] = [ll_id for ll_id in ego_route_ids if ll_id in builder._cache]
+    route_polylines = [builder._cache[ll_id].raw_centerline[:, :2] for ll_id in _route_vis_ll_ids]
 
     # --- Traffic light controller. ---
     tl_controller: TrafficLightController | None = None
     if spawn_config.enable_traffic_lights:
         tl_controller = TrafficLightController(
-            builder, ego_route_ids, seed=spawn_config.seed,
+            builder,
+            ego_route_ids,
+            seed=spawn_config.seed,
         )
         # Apply initial TL state to the freshly-built map_data AND ego route_lanes.
         tl_controller.tick(scene, 0.0, builder._last_map_data_ids, ego_xy=snapped_xy)
         tl_controller.write_to_route_lanes(
-            scene.ego_agent.route_lanes, initial_route_window, 0.0,
+            scene.ego_agent.route_lanes,
+            initial_route_window,
+            0.0,
         )
 
     # --- NPC manager. ---
@@ -2123,7 +2320,8 @@ def run_route_replay(
 
     if spawn_config.parked_vehicles_yaml:
         npc_manager.inject_parked_vehicles_from_yaml(
-            scene, spawn_config.parked_vehicles_yaml,
+            scene,
+            spawn_config.parked_vehicles_yaml,
         )
 
     map_cache = MapTensorCache(scene.map_data)
@@ -2131,7 +2329,7 @@ def run_route_replay(
     goal_reached = False
     reason = "max_steps"
     min_goal_d = float("inf")  # closest approach to goal seen so far
-    stuck_counter = 0          # consecutive low-speed steps for stuck recovery
+    stuck_counter = 0  # consecutive low-speed steps for stuck recovery
     stuck_nudge_remaining = 0  # frames left in current nudge burst
 
     # Per-step trajectory log for post-hoc evaluation.
@@ -2161,10 +2359,14 @@ def run_route_replay(
     # is disabled (turn_indicator_hold_steps == 0).
     turn_hold_state: dict[str, tuple[int, int]] = {}
     if _use_tracker:
-        print(f"  Advance mode: {spawn_config.advance_mode}"
-              + (f" (horizon={spawn_config.mpc_horizon_steps}, "
-                 f"knots={spawn_config.mpc_n_knots})"
-                 if spawn_config.advance_mode == "mpc" else ""))
+        print(
+            f"  Advance mode: {spawn_config.advance_mode}"
+            + (
+                f" (horizon={spawn_config.mpc_horizon_steps}, knots={spawn_config.mpc_n_knots})"
+                if spawn_config.advance_mode == "mpc"
+                else ""
+            )
+        )
 
     # --- Main loop. ---
     with ThreadPoolExecutor(max_workers=4, thread_name_prefix="save") as save_pool:
@@ -2179,7 +2381,8 @@ def run_route_replay(
 
             # Distance-gated parked vehicle visibility (perception range).
             npc_manager.update_parked_visibility(
-                scene, scene.ego_agent.current_position,
+                scene,
+                scene.ego_agent.current_position,
                 spawn_config.parked_vehicle_visibility_m,
             )
 
@@ -2190,7 +2393,7 @@ def run_route_replay(
                 npc_manager.tick(scene)
                 after = sum(1 for a in scene.agents if a.id != scene.ego_agent_id)
                 if after > before:
-                    n_npc_spawned += (after - before)
+                    n_npc_spawned += after - before
                 # Prune trackers for despawned agents.
                 if _use_tracker:
                     alive_ids = {a.id for a in scene.agents}
@@ -2210,8 +2413,7 @@ def run_route_replay(
             # query + polygon/line_string tensors).
             if step == 0 or step % spawn_config.map_refresh_steps == 0:
                 neighbor_xys = [
-                    a.current_position for a in scene.agents
-                    if a.id != scene.ego_agent_id
+                    a.current_position for a in scene.agents if a.id != scene.ego_agent_id
                 ]
                 new_ids = _compute_map_lanelet_ids(ego_xy, neighbor_xys)
                 scene.map_data = builder._build_map_data(new_ids, center_xy=ego_xy)
@@ -2229,7 +2431,9 @@ def run_route_replay(
             # ego ignore red lights at intersections.
             if tl_controller is not None:
                 tl_controller.tick(
-                    scene, step * 0.1, builder._last_map_data_ids,
+                    scene,
+                    step * 0.1,
+                    builder._last_map_data_ids,
                     ego_xy=ego_xy,
                 )
                 map_cache.sync_tl_state(scene.map_data)
@@ -2243,7 +2447,9 @@ def run_route_replay(
                     continue
                 a_xy = a.current_position
                 fwd = builder.select_route_segment_indices(
-                    a.route_lanelet_ids, a_xy, max_segments=25,
+                    a.route_lanelet_ids,
+                    a_xy,
+                    max_segments=25,
                 )
                 if fwd:
                     rl, rsl, rhsl = builder._route_to_33dim(fwd)
@@ -2263,9 +2469,9 @@ def run_route_replay(
             # velocity pose through the whole sim. Missing from
             # agent_predictions → advance_scene skips them.
             ids_to_predict = [
-                a.id for a in scene.agents
-                if a.agent_type == AgentType.VEHICLE
-                and not SceneNPCManager.is_static_npc(a.id)
+                a.id
+                for a in scene.agents
+                if a.agent_type == AgentType.VEHICLE and not SceneNPCManager.is_static_npc(a.id)
             ]
             if spawn_config.sequential_inference:
                 # One forward pass per agent (batch_size=1 each).
@@ -2273,8 +2479,13 @@ def run_route_replay(
                 agent_turn_indicators: dict[str, int] = {}
                 for aid in ids_to_predict:
                     p, ti = _predict_batch(
-                        model, model_args, scene, [aid], device,
-                        map_cache=map_cache, return_turn_indicators=True,
+                        model,
+                        model_args,
+                        scene,
+                        [aid],
+                        device,
+                        map_cache=map_cache,
+                        return_turn_indicators=True,
                         inference_delay=spawn_config.inference_delay,
                         turn_indicator_keep_bias=spawn_config.turn_indicator_keep_bias,
                     )
@@ -2282,8 +2493,13 @@ def run_route_replay(
                     agent_turn_indicators.update(ti)
             else:
                 agent_predictions, agent_turn_indicators = _predict_batch(
-                    model, model_args, scene, ids_to_predict, device,
-                    map_cache=map_cache, return_turn_indicators=True,
+                    model,
+                    model_args,
+                    scene,
+                    ids_to_predict,
+                    device,
+                    map_cache=map_cache,
+                    return_turn_indicators=True,
                     inference_delay=spawn_config.inference_delay,
                     turn_indicator_keep_bias=spawn_config.turn_indicator_keep_bias,
                 )
@@ -2308,12 +2524,15 @@ def run_route_replay(
             # persists for _STUCK_HOLD frames so the ego actually clears the
             # obstacle instead of inching one step and stopping again.
             _STUCK_SPEED_THRESH = 0.3  # m/s
-            _STUCK_PATIENCE = 400      # steps (~40 s at 10 Hz, > max red+yellow 35s)
-            _STUCK_HOLD = 40           # keep nudging for this many frames once triggered
-            _STUCK_NUDGE_MPS = 2.0     # forward speed to inject
+            _STUCK_PATIENCE = 400  # steps (~40 s at 10 Hz, > max red+yellow 35s)
+            _STUCK_HOLD = 40  # keep nudging for this many frames once triggered
+            _STUCK_NUDGE_MPS = 2.0  # forward speed to inject
             ego_id = scene.ego_agent.id
-            _cur_speed = float(np.linalg.norm(scene.ego_agent.past_velocities[-1])) \
-                if scene.ego_agent.past_velocities is not None else 0.0
+            _cur_speed = (
+                float(np.linalg.norm(scene.ego_agent.past_velocities[-1]))
+                if scene.ego_agent.past_velocities is not None
+                else 0.0
+            )
             if _cur_speed < _STUCK_SPEED_THRESH:
                 stuck_counter += 1
             else:
@@ -2321,7 +2540,9 @@ def run_route_replay(
                     stuck_counter = 0
             if stuck_counter >= _STUCK_PATIENCE and stuck_nudge_remaining <= 0:
                 stuck_nudge_remaining = _STUCK_HOLD
-                print(f"  [stuck-recovery] ego stuck for {_STUCK_PATIENCE} steps at step {step}, nudging for {_STUCK_HOLD} frames")
+                print(
+                    f"  [stuck-recovery] ego stuck for {_STUCK_PATIENCE} steps at step {step}, nudging for {_STUCK_HOLD} frames"
+                )
             if stuck_nudge_remaining > 0 and ego_id in agent_predictions:
                 _traj = agent_predictions[ego_id]
                 for _t in range(_traj.shape[0]):
@@ -2349,26 +2570,38 @@ def run_route_replay(
 
                 if reward_cfg is not None:
                     ego_pred = agent_predictions.get(scene.ego_agent_id)
-                    metrics_log.append(_score_step(
-                        data, step, device, reward_cfg, spawn_config,
-                        prediction=ego_pred,
-                    ))
+                    metrics_log.append(
+                        _score_step(
+                            data,
+                            step,
+                            device,
+                            reward_cfg,
+                            spawn_config,
+                            prediction=ego_pred,
+                        )
+                    )
 
             # Save PNG (concurrent with next step's compute).
             out_path = output_dir / f"step_{step:04d}.png"
             overlay_metrics = (
-                metrics_log[-1]
-                if spawn_config.overlay_metrics_on_png and metrics_log
-                else None
+                metrics_log[-1] if spawn_config.overlay_metrics_on_png and metrics_log else None
             )
-            pending_saves.append(save_pool.submit(
-                save_step_figure,
-                deepcopy(scene), agent_predictions, out_path,
-                step, spawn_config.max_steps, route_polylines,
-                _VIEW_HALF_M, _route_vis_ll_ids,
-                step * 0.1, road_border_polylines,
-                overlay_metrics,
-            ))
+            pending_saves.append(
+                save_pool.submit(
+                    save_step_figure,
+                    deepcopy(scene),
+                    agent_predictions,
+                    out_path,
+                    step,
+                    spawn_config.max_steps,
+                    route_polylines,
+                    _VIEW_HALF_M,
+                    _route_vis_ll_ids,
+                    step * 0.1,
+                    road_border_polylines,
+                    overlay_metrics,
+                )
+            )
 
             # Record realized obstacle clearances (ego world pose + nearest
             # road-border / stopped-NPC / moving-NPC distances) for the
@@ -2379,18 +2612,20 @@ def run_route_replay(
                 rb_info = _ego_border_distance(ego_now, road_border_polylines)
                 sc_pair = _ego_nearest_static_npc(scene, threshold_m=_CLEARANCE_LOG_MAX_M)
                 mv_pair = _ego_nearest_moving_npc(scene, threshold_m=_CLEARANCE_LOG_MAX_M)
-                clearance_records.append({
-                    "step": step,
-                    "ego_x": float(ego_now.current_position[0]),
-                    "ego_y": float(ego_now.current_position[1]),
-                    "ego_yaw": float(ego_now.current_heading),
-                    "rb_dist": float(rb_info[2]) if rb_info is not None else None,
-                    "stopped_dist": float(sc_pair[2]) if sc_pair is not None else None,
-                    "stopped_id": sc_pair[3] if sc_pair is not None else None,
-                    "moving_dist": float(mv_pair[2]) if mv_pair is not None else None,
-                    "moving_id": mv_pair[3] if mv_pair is not None else None,
-                    "png": out_path.name,
-                })
+                clearance_records.append(
+                    {
+                        "step": step,
+                        "ego_x": float(ego_now.current_position[0]),
+                        "ego_y": float(ego_now.current_position[1]),
+                        "ego_yaw": float(ego_now.current_heading),
+                        "rb_dist": float(rb_info[2]) if rb_info is not None else None,
+                        "stopped_dist": float(sc_pair[2]) if sc_pair is not None else None,
+                        "stopped_id": sc_pair[3] if sc_pair is not None else None,
+                        "moving_dist": float(mv_pair[2]) if mv_pair is not None else None,
+                        "moving_id": mv_pair[3] if mv_pair is not None else None,
+                        "png": out_path.name,
+                    }
+                )
 
             # Drain finished saves so memory doesn't balloon. Call
             # .result() to surface any exceptions from background saves.
@@ -2420,16 +2655,21 @@ def run_route_replay(
             # Log ego state before termination checks so the terminal frame
             # (at goal_reached/goal_passed) is preserved for post-hoc metrics.
             ego_agent = scene.ego_agent
-            ego_speed = float(np.linalg.norm(ego_agent.past_velocities[-1])) \
-                if ego_agent.past_velocities is not None else 0.0
-            trajectory_log.append({
-                "step": step,
-                "x": float(ego_pos[0]),
-                "y": float(ego_pos[1]),
-                "heading": float(ego_heading),
-                "speed": ego_speed,
-                "goal_d": d_goal,
-            })
+            ego_speed = (
+                float(np.linalg.norm(ego_agent.past_velocities[-1]))
+                if ego_agent.past_velocities is not None
+                else 0.0
+            )
+            trajectory_log.append(
+                {
+                    "step": step,
+                    "x": float(ego_pos[0]),
+                    "y": float(ego_pos[1]),
+                    "heading": float(ego_heading),
+                    "speed": ego_speed,
+                    "goal_d": d_goal,
+                }
+            )
 
             if d_goal <= spawn_config.goal_tolerance_m:
                 goal_reached = True
@@ -2452,7 +2692,9 @@ def run_route_replay(
 
             if spawn_config.advance_mode in ("mpc", "perfect"):
                 advance_scene_mpc(
-                    scene, agent_predictions, mpc_trackers,
+                    scene,
+                    agent_predictions,
+                    mpc_trackers,
                     tracker_type=spawn_config.advance_mode,
                     mpc_horizon_steps=spawn_config.mpc_horizon_steps,
                     mpc_n_knots=spawn_config.mpc_n_knots,
@@ -2555,16 +2797,19 @@ def run_route_replay(
     if clearance_records:
         clearance_log_path = output_dir / "clearance_log.json"
         with open(clearance_log_path, "w") as f:
-            json.dump({
-                "ego_shape": [
-                    spawn_config.ego_wheelbase,
-                    spawn_config.ego_length,
-                    spawn_config.ego_width,
-                ],
-                "max_range_m": _CLEARANCE_LOG_MAX_M,
-                "png_dir": str(output_dir),
-                "records": clearance_records,
-            }, f)
+            json.dump(
+                {
+                    "ego_shape": [
+                        spawn_config.ego_wheelbase,
+                        spawn_config.ego_length,
+                        spawn_config.ego_width,
+                    ],
+                    "max_range_m": _CLEARANCE_LOG_MAX_M,
+                    "png_dir": str(output_dir),
+                    "records": clearance_records,
+                },
+                f,
+            )
 
     out = {
         "final_step": final_step,
@@ -2586,26 +2831,44 @@ def run_route_replay(
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Closed-loop replay of a saved scenario_generation Route "
-                    "with dynamic NPC spawning.",
+        "with dynamic NPC spawning.",
     )
-    parser.add_argument("--map_path", type=str, default=None,
-                        help="Override the map path stored in the Route pickle")
+    parser.add_argument(
+        "--map_path",
+        type=str,
+        default=None,
+        help="Override the map path stored in the Route pickle",
+    )
     parser.add_argument("--route", type=Path, required=True, help="Path to route.pkl")
     parser.add_argument("--model_path", type=Path, required=True, help="Path to best_model.pth")
-    parser.add_argument("--output_dir", type=Path, required=True,
-                        help="Directory for per-step PNGs")
-    parser.add_argument("--steps", type=int, default=None,
-                        help="Max simulation steps (overrides config.max_steps; "
-                             "default from config = 6000 = 10 min at dt=0.1)")
-    parser.add_argument("--max_npcs", type=int, default=None,
-                        help="Override hard cap on concurrent neighbors")
-    parser.add_argument("--spawn_probability", type=float, default=None,
-                        help="Override spawn probability per spawn tick")
-    parser.add_argument("--config", type=Path, required=True,
-                        help="Path to a SpawnConfig JSON. Required — replay "
-                             "refuses to run with dataclass defaults because "
-                             "they don't match any production recipe. Author "
-                             "a config per run.")
+    parser.add_argument(
+        "--output_dir", type=Path, required=True, help="Directory for per-step PNGs"
+    )
+    parser.add_argument(
+        "--steps",
+        type=int,
+        default=None,
+        help="Max simulation steps (overrides config.max_steps; "
+        "default from config = 6000 = 10 min at dt=0.1)",
+    )
+    parser.add_argument(
+        "--max_npcs", type=int, default=None, help="Override hard cap on concurrent neighbors"
+    )
+    parser.add_argument(
+        "--spawn_probability",
+        type=float,
+        default=None,
+        help="Override spawn probability per spawn tick",
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="Path to a SpawnConfig JSON. Required — replay "
+        "refuses to run with dataclass defaults because "
+        "they don't match any production recipe. Author "
+        "a config per run.",
+    )
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--seed", type=int, default=None)
     args = parser.parse_args()
@@ -2633,8 +2896,13 @@ def main() -> None:
     model, model_args = load_model(args.model_path, device)
 
     run_route_replay(
-        model=model, model_args=model_args, builder=builder, route=route,
-        output_dir=args.output_dir, spawn_config=cfg, device=device,
+        model=model,
+        model_args=model_args,
+        builder=builder,
+        route=route,
+        output_dir=args.output_dir,
+        spawn_config=cfg,
+        device=device,
     )
 
 

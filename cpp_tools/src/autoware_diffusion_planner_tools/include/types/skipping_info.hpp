@@ -55,9 +55,9 @@ enum class SkippingLabel {
   InsufficientDistance,  // Traveled distance of sequence is too short
 
   // Frame processing skipping reasons
-  RedOrYellowLight,        // At red or yellow light with forward future trajectory
-  StoppedAtTrafficLight,   // Sustained stop at red/yellow light (formerly VehicleStopped;
-                           // contrast with NoFutureProgress for non-light stops)
+  RedOrYellowLight,       // At red or yellow light with forward future trajectory
+  StoppedAtTrafficLight,  // Sustained stop at red/yellow light (formerly VehicleStopped;
+                          // contrast with NoFutureProgress for non-light stops)
 
   // Filter skipping reasons (ported from the standalone python filter scripts)
   Collision,  // GT ego trajectory collides with a static object, neighbor, or road border
@@ -124,8 +124,7 @@ struct SkippingInfo
 
   static SkippingInfo stopped_at_traffic_light()
   {
-    return {
-      SkippingLabel::StoppedAtTrafficLight, "Sustained stop at red/yellow light", {}, {}};
+    return {SkippingLabel::StoppedAtTrafficLight, "Sustained stop at red/yellow light", {}, {}};
   }
 
   static SkippingInfo red_or_yellow_light()

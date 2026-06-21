@@ -62,13 +62,16 @@ def as_visualization_batch(sample: dict[str, np.ndarray]) -> dict[str, np.ndarra
             visualized[key] = heading_to_cos_sin_np(visualized[key])
     return visualized
 
+
 # Save original data visualization with augmentation range rectangle
 original_save_path = save_dir / "original.png"
 fig, ax = plt.subplots(figsize=(10, 10))
 
 # Visualize inputs on the ax
 view_range = 30
-visualize_inputs(as_visualization_batch(deepcopy(data)), save_path=None, ax=ax, view_ranges=[view_range])
+visualize_inputs(
+    as_visualization_batch(deepcopy(data)), save_path=None, ax=ax, view_ranges=[view_range]
+)
 
 # Get augmentation ranges from the aug object (approximate +/- 3 sigma for normal)
 cfg = aug.config
