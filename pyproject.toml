@@ -13,6 +13,7 @@ dependencies = [
     "scene-search",
     "training-data-visualizer",
     "training-result-visualizer",
+    "diffusion-planner-gui",
 ]
 
 [dependency-groups]
@@ -34,6 +35,7 @@ members = [
     "guidance_gui",
     "training_data_visualizer",
     "training_result_visualizer",
+    "diffusion_planner_gui",
 ]
 
 [tool.uv.sources]
@@ -46,6 +48,7 @@ scene-search = { workspace = true }
 guidance-gui = { workspace = true }
 training-data-visualizer = { workspace = true }
 training-result-visualizer = { workspace = true }
+diffusion-planner-gui = { workspace = true }
 
 [tool.pytest.ini_options]
 markers = [

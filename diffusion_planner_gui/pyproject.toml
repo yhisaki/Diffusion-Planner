@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "diffusion-planner-gui"
+version = "0.1.0"
+description = "Unified GUI for Diffusion Planner training data and prediction visualization"
+requires-python = ">=3.10"
+dependencies = [
+    "diffusion-planner",
+    "streamlit>=1.28",
+    "numpy>=1.26,<2",
+    "plotly>=6.0.0",
+    "torch>=2.0.0",
+]
+
+[project.scripts]
+diffusion-planner-gui = "diffusion_planner_gui.__main__:main"
