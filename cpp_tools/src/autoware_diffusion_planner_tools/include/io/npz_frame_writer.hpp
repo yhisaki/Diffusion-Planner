@@ -22,7 +22,9 @@
 void save_frame_data_npz(
   const std::string & output_path, const std::string & rosbag_dir_name, const std::string & token,
   const std::vector<float> & ego_past, const std::vector<float> & ego_current,
-  const std::vector<float> & ego_future, const std::vector<float> & neighbor_past,
+  const std::vector<float> & ego_future, const std::vector<float> & ego_velocity_past,
+  const std::vector<float> & ego_velocity_future, const std::vector<float> & ego_acceleration_past,
+  const std::vector<float> & ego_acceleration_future, const std::vector<float> & neighbor_past,
   const std::vector<float> & neighbor_future, const std::vector<float> & static_objects,
   const std::vector<float> & lanes, const std::vector<float> & lanes_speed_limit,
   const std::vector<uint8_t> & lanes_has_speed_limit, const std::vector<float> & route_lanes,

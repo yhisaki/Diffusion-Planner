@@ -78,7 +78,9 @@ std::vector<float> cos_sin_to_heading_3d(const std::vector<float> & data, size_t
 void save_frame_data_npz(
   const std::string & output_path, const std::string & rosbag_dir_name, const std::string & token,
   const std::vector<float> & ego_past, const std::vector<float> & ego_current,
-  const std::vector<float> & ego_future, const std::vector<float> & neighbor_past,
+  const std::vector<float> & ego_future, const std::vector<float> & ego_velocity_past,
+  const std::vector<float> & ego_velocity_future, const std::vector<float> & ego_acceleration_past,
+  const std::vector<float> & ego_acceleration_future, const std::vector<float> & neighbor_past,
   const std::vector<float> & neighbor_future, const std::vector<float> & static_objects,
   const std::vector<float> & lanes, const std::vector<float> & lanes_speed_limit,
   const std::vector<uint8_t> & lanes_has_speed_limit, const std::vector<float> & route_lanes,
@@ -115,11 +117,24 @@ void save_frame_data_npz(
     npz_filename, "ego_agent_past", ego_past_heading.data(), {INPUT_T_WITH_CURRENT, 3}, "a");
 
   cnpy::npz_save_compressed(
+    npz_filename, "ego_velocity_past", ego_velocity_past.data(), {INPUT_T_WITH_CURRENT, 2}, "a");
+
+  cnpy::npz_save_compressed(
+    npz_filename, "ego_acceleration_past", ego_acceleration_past.data(), {INPUT_T_WITH_CURRENT, 2},
+    "a");
+
+  cnpy::npz_save_compressed(
     npz_filename, "ego_current_state", ego_current.data(), {ego_current.size()}, "a");
 
   const std::vector<float> ego_future_heading = cos_sin_to_heading(ego_future, OUTPUT_T);
   cnpy::npz_save_compressed(
     npz_filename, "ego_agent_future", ego_future_heading.data(), {OUTPUT_T, 3}, "a");
+
+  cnpy::npz_save_compressed(
+    npz_filename, "ego_velocity_future", ego_velocity_future.data(), {OUTPUT_T, 2}, "a");
+
+  cnpy::npz_save_compressed(
+    npz_filename, "ego_acceleration_future", ego_acceleration_future.data(), {OUTPUT_T, 2}, "a");
 
   constexpr int64_t NEIGHBOR_PAST_DIM = 11;
   cnpy::npz_save_compressed(

@@ -32,6 +32,7 @@
 
 #include <autoware_perception_msgs/msg/traffic_light_group_array.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <iomanip>
@@ -42,6 +43,49 @@
 #include <sstream>
 #include <string>
 #include <vector>
+
+namespace
+{
+
+constexpr double kVelocityTransitionThreshold = 1.0e-4;
+
+bool is_near_zero_velocity(const FrameData & frame)
+{
+  return std::abs(frame.kinematic_state.twist.twist.linear.x) < kVelocityTransitionThreshold;
+}
+
+bool is_velocity_transition_frame(const std::vector<FrameData> & data_list, const int64_t index)
+{
+  if (index < 0 || index + 1 >= static_cast<int64_t>(data_list.size())) {
+    return false;
+  }
+
+  return is_near_zero_velocity(data_list[static_cast<size_t>(index)]) !=
+         is_near_zero_velocity(data_list[static_cast<size_t>(index + 1)]);
+}
+
+std::vector<int64_t> create_processing_indices(
+  const std::vector<FrameData> & data_list, const int64_t start_index, const int64_t step)
+{
+  const int64_t n = static_cast<int64_t>(data_list.size());
+  const int64_t effective_step = std::max<int64_t>(step, 1);
+  std::vector<int64_t> indices;
+
+  for (int64_t i = start_index; i < n; ++i) {
+    const bool is_step_frame = ((i - start_index) % effective_step) == 0;
+    // Keep start/stop boundary frames even when options.step would skip them.
+    // These boundaries are useful training samples because the ego velocity crosses
+    // the near-zero threshold between this frame and the next frame.
+    if (is_step_frame || is_velocity_transition_frame(data_list, i)) {
+      indices.push_back(i);
+    }
+  }
+
+  indices.erase(std::unique(indices.begin(), indices.end()), indices.end());
+  return indices;
+}
+
+}  // namespace
 
 void process_sequence(
   SequenceData & seq, const int64_t seq_id, const ConverterPaths & paths,
@@ -116,7 +160,9 @@ void process_sequence(
   // Skip frames where the GT future has not advanced for >=3s (ego stuck / stationary
   // beyond just red lights). Tracks consecutive iterations with !is_future_forward.
   int64_t no_future_progress_count = 0;
-  for (int64_t i = INPUT_T_WITH_CURRENT; i < n; i += options.step) {
+  const std::vector<int64_t> processing_indices =
+    create_processing_indices(seq.data_list, INPUT_T_WITH_CURRENT, options.step);
+  for (const int64_t i : processing_indices) {
     // Create token in canonical format: seq_id(8digits) + "_" + i(8digits)
     const std::string token = create_token(seq_id, i);
 
@@ -135,6 +181,22 @@ void process_sequence(
       break;
     }
     const std::vector<float> & ego_past = ego_past_opt.value();
+    const auto ego_velocity_past_opt = create_ego_velocity_sequence(
+      seq.data_list, i - INPUT_T_WITH_CURRENT + 1, INPUT_T_WITH_CURRENT, past_reference_time,
+      options.use_interpolation);
+    if (!ego_velocity_past_opt) {
+      std::cout << "Failed to create ego velocity past at frame " << i << std::endl;
+      break;
+    }
+    const std::vector<float> & ego_velocity_past = ego_velocity_past_opt.value();
+    const auto ego_acceleration_past_opt = create_ego_acceleration_sequence(
+      seq.data_list, i - INPUT_T_WITH_CURRENT + 1, INPUT_T_WITH_CURRENT, past_reference_time,
+      options.use_interpolation);
+    if (!ego_acceleration_past_opt) {
+      std::cout << "Failed to create ego acceleration past at frame " << i << std::endl;
+      break;
+    }
+    const std::vector<float> & ego_acceleration_past = ego_acceleration_past_opt.value();
 
     const rclcpp::Time future_reference_time =
       past_reference_time +
@@ -146,6 +208,22 @@ void process_sequence(
       break;
     }
     const std::vector<float> & ego_future = ego_future_opt.value();
+    const auto ego_velocity_future_opt = create_ego_velocity_sequence(
+      seq.data_list, i + 1, OUTPUT_T, future_reference_time, options.use_interpolation);
+    if (!ego_velocity_future_opt) {
+      std::cout << "Reached end of sequence for ego velocity at frame " << i << "/" << n
+                << std::endl;
+      break;
+    }
+    const std::vector<float> & ego_velocity_future = ego_velocity_future_opt.value();
+    const auto ego_acceleration_future_opt = create_ego_acceleration_sequence(
+      seq.data_list, i + 1, OUTPUT_T, future_reference_time, options.use_interpolation);
+    if (!ego_acceleration_future_opt) {
+      std::cout << "Reached end of sequence for ego acceleration at frame " << i << "/" << n
+                << std::endl;
+      break;
+    }
+    const std::vector<float> & ego_acceleration_future = ego_acceleration_future_opt.value();
 
     // Create ego current state
     const std::vector<float> ego_current = preprocess::create_ego_current_state(
@@ -292,10 +370,11 @@ void process_sequence(
     // Accepted frames are always written; skipped frames only on request.
     if (!is_skipped || options.write_skipped_npz) {
       save_frame_data_npz(
-        paths.save_dir, rosbag_dir_name, token, ego_past, ego_current, ego_future, neighbor_past,
-        neighbor_future, static_objects, lanes, lanes_speed_limit, lanes_has_speed_limit,
-        route_lanes, route_lanes_speed_limit, route_lanes_has_speed_limit, polygons, line_strings,
-        goal_pose_vec, turn_indicators, ego_shape);
+        options.save_dir, options.rosbag_dir_name, token, ego_past, ego_current, ego_future,
+        ego_velocity_past, ego_velocity_future, ego_acceleration_past, ego_acceleration_future,
+        neighbor_past, neighbor_future, static_objects, lanes, lanes_speed_limit,
+        lanes_has_speed_limit, route_lanes, route_lanes_speed_limit, route_lanes_has_speed_limit,
+        polygons, line_strings, goal_pose_vec, turn_indicators, options.ego_shape);
     }
     save_frame_json(
       paths.save_dir, rosbag_dir_name, token, seq.data_list[i].kinematic_state,

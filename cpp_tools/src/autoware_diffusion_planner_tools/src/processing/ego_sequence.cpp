@@ -43,22 +43,101 @@ std::optional<std::vector<float>> create_ego_sequence(
 
     return autoware::diffusion_planner::preprocess::create_ego_agent_past(
       odom_deque, num_timesteps, map2bl_matrix, reference_time);
-  } else {
-    // Without interpolation: collect exactly num_timesteps frames by index
-    for (size_t j = 0; j < num_timesteps; ++j) {
-      const int64_t index =
-        std::min(start_idx + static_cast<int64_t>(j), static_cast<int64_t>(data_list.size()) - 1);
-      if (index < 0) {
-        return std::nullopt;
+  }
+
+  // Without interpolation: collect exactly num_timesteps frames by index
+  for (size_t j = 0; j < num_timesteps; ++j) {
+    const int64_t index =
+      std::min(start_idx + static_cast<int64_t>(j), static_cast<int64_t>(data_list.size()) - 1);
+    if (index < 0) {
+      return std::nullopt;
+    }
+    odom_deque.push_back(data_list[index].kinematic_state);
+  }
+
+  if (odom_deque.empty()) {
+    return std::nullopt;
+  }
+
+  return autoware::diffusion_planner::preprocess::create_ego_agent_past(
+    odom_deque, num_timesteps, map2bl_matrix);
+}
+
+std::optional<std::vector<float>> create_ego_velocity_sequence(
+  const std::vector<FrameData> & data_list, const int64_t start_idx, const size_t num_timesteps,
+  const rclcpp::Time & reference_time, const bool use_interpolation)
+{
+  std::deque<nav_msgs::msg::Odometry> odom_deque;
+
+  if (use_interpolation) {
+    for (size_t j = static_cast<size_t>(std::max(int64_t(0), start_idx)); j < data_list.size();
+         ++j) {
+      odom_deque.push_back(data_list[j].kinematic_state);
+      if (rclcpp::Time(data_list[j].kinematic_state.header.stamp) >= reference_time) {
+        break;
       }
-      odom_deque.push_back(data_list[index].kinematic_state);
     }
 
-    if (odom_deque.empty()) {
+    if (odom_deque.empty() || rclcpp::Time(odom_deque.back().header.stamp) < reference_time) {
       return std::nullopt;
     }
 
-    return autoware::diffusion_planner::preprocess::create_ego_agent_past(
-      odom_deque, num_timesteps, map2bl_matrix);
+    return autoware::diffusion_planner::preprocess::create_ego_velocity(
+      odom_deque, num_timesteps, reference_time);
   }
+
+  for (size_t j = 0; j < num_timesteps; ++j) {
+    const int64_t index =
+      std::min(start_idx + static_cast<int64_t>(j), static_cast<int64_t>(data_list.size()) - 1);
+    if (index < 0) {
+      return std::nullopt;
+    }
+    odom_deque.push_back(data_list[index].kinematic_state);
+  }
+
+  if (odom_deque.empty()) {
+    return std::nullopt;
+  }
+
+  return autoware::diffusion_planner::preprocess::create_ego_velocity(odom_deque, num_timesteps);
+}
+
+std::optional<std::vector<float>> create_ego_acceleration_sequence(
+  const std::vector<FrameData> & data_list, const int64_t start_idx, const size_t num_timesteps,
+  const rclcpp::Time & reference_time, const bool use_interpolation)
+{
+  std::deque<geometry_msgs::msg::AccelWithCovarianceStamped> accel_deque;
+
+  if (use_interpolation) {
+    for (size_t j = static_cast<size_t>(std::max(int64_t(0), start_idx)); j < data_list.size();
+         ++j) {
+      accel_deque.push_back(data_list[j].acceleration);
+      if (rclcpp::Time(data_list[j].acceleration.header.stamp) >= reference_time) {
+        break;
+      }
+    }
+
+    if (accel_deque.empty() || rclcpp::Time(accel_deque.back().header.stamp) < reference_time) {
+      return std::nullopt;
+    }
+
+    return autoware::diffusion_planner::preprocess::create_ego_acceleration(
+      accel_deque, num_timesteps, reference_time);
+  }
+
+  for (size_t j = 0; j < num_timesteps; ++j) {
+    const int64_t index =
+      std::min(start_idx + static_cast<int64_t>(j), static_cast<int64_t>(data_list.size()) - 1);
+    if (index < 0) {
+      return std::nullopt;
+    }
+    accel_deque.push_back(data_list[index].acceleration);
+  }
+
+  if (accel_deque.empty()) {
+    return std::nullopt;
+  }
+
+  return autoware::diffusion_planner::preprocess::create_ego_acceleration(
+    accel_deque, num_timesteps);
 }

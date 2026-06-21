@@ -29,4 +29,12 @@ std::optional<std::vector<float>> create_ego_sequence(
   const Eigen::Matrix4d & map2bl_matrix, const rclcpp::Time & reference_time,
   const bool use_interpolation);
 
+std::optional<std::vector<float>> create_ego_velocity_sequence(
+  const std::vector<FrameData> & data_list, const int64_t start_idx, const size_t num_timesteps,
+  const rclcpp::Time & reference_time, const bool use_interpolation);
+
+std::optional<std::vector<float>> create_ego_acceleration_sequence(
+  const std::vector<FrameData> & data_list, const int64_t start_idx, const size_t num_timesteps,
+  const rclcpp::Time & reference_time, const bool use_interpolation);
+
 #endif  // PROCESSING__EGO_SEQUENCE_HPP_
