@@ -370,11 +370,11 @@ void process_sequence(
     // Accepted frames are always written; skipped frames only on request.
     if (!is_skipped || options.write_skipped_npz) {
       save_frame_data_npz(
-        options.save_dir, options.rosbag_dir_name, token, ego_past, ego_current, ego_future,
+        paths.save_dir, rosbag_dir_name, token, ego_past, ego_current, ego_future,
         ego_velocity_past, ego_velocity_future, ego_acceleration_past, ego_acceleration_future,
         neighbor_past, neighbor_future, static_objects, lanes, lanes_speed_limit,
         lanes_has_speed_limit, route_lanes, route_lanes_speed_limit, route_lanes_has_speed_limit,
-        polygons, line_strings, goal_pose_vec, turn_indicators, options.ego_shape);
+        polygons, line_strings, goal_pose_vec, turn_indicators, ego_shape);
     }
     save_frame_json(
       paths.save_dir, rosbag_dir_name, token, seq.data_list[i].kinematic_state,
