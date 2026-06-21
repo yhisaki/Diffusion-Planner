@@ -1,26 +1,30 @@
+from typing import Any, TypeAlias
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from timm.layers import DropPath
-from timm.models.layers import Mlp
+from timm.layers import Mlp
 
 from diffusion_planner.dimensions import *
 from diffusion_planner.model.module.mixer import MixerBlock
 
-CLASS_TYPE_EGO = 0
-CLASS_TYPE_NEIGHBOR = 1
-CLASS_TYPE_STATIC = 2
-CLASS_TYPE_LANE = 3
-CLASS_TYPE_ROUTE = 4
-CLASS_TYPE_POLYGON = 5
-CLASS_TYPE_LINE_STRING = 6
-CLASS_TYPE_GOAL_POSE = 7
-CLASS_TYPE_EGO_SHAPE = 8
-CLASS_TYPE_TURN_INDICATOR = 9
-CLASS_TYPE_NUM = 10
+CLASS_TYPE_EGO_VELOCITY = 0
+CLASS_TYPE_EGO_DISPLACEMENT = 1
+CLASS_TYPE_NEIGHBOR = 2
+CLASS_TYPE_STATIC = 3
+CLASS_TYPE_LANE = 4
+CLASS_TYPE_ROUTE = 5
+CLASS_TYPE_POLYGON = 6
+CLASS_TYPE_LINE_STRING = 7
+CLASS_TYPE_GOAL_POSE = 8
+CLASS_TYPE_EGO_SHAPE = 9
+CLASS_TYPE_TURN_INDICATOR = 10
+CLASS_TYPE_NUM = 11
+
+EncoderOutput: TypeAlias = tuple[torch.Tensor, torch.Tensor, torch.Tensor]
 
 
-def add_class_type(x, class_type):
+def add_class_type(x: torch.Tensor, class_type: int) -> torch.Tensor:
     """
     Add class type to the input tensor.
     Args:
@@ -38,43 +42,50 @@ def add_class_type(x, class_type):
     return torch.cat([x, class_type_tensor], dim=-1)
 
 
+def add_neighbor_class_type(x: torch.Tensor) -> torch.Tensor:
+    """
+    Add the neighbor class type to the input tensor.
+    Args:
+        x: Tensor of shape (B, P, D=4) where D=4 represents (x, y, cos, sin)
+    Returns:
+        x: Tensor with neighbor class type added at the end
+    """
+    return add_class_type(x, CLASS_TYPE_NEIGHBOR)
+
+
 class Encoder(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config: Any) -> None:
         super().__init__()
 
         self.hidden_dim = config.hidden_dim
 
-        self.use_ego_history = config.use_ego_history
-        self.ego_history_dropout_rate = config.ego_history_dropout_rate
         self.use_turn_indicators = config.use_turn_indicators
 
-        ego_num = 1
-        goal_pose_num = 1
-        ego_shape_num = 1
-        turn_indicator_num = 1
         self.token_num = (
-            ego_num
+            1  # Ego velocity token
+            + 1  # Ego displacement token
             + config.agent_num
             + config.static_objects_num
             + config.lane_num
             + config.route_num
             + config.polygon_num
             + config.line_string_num
-            + goal_pose_num
-            + ego_shape_num
-            + turn_indicator_num
+            + 1  # Goal pose token
+            + 1  # Ego shape token
+            + 1  # Turn indicator token
         )
 
-        self.ego_encoder = EgoEncoder(
-            config.time_len,
-            drop_path_rate=config.encoder_drop_path_rate,
+        self.ego_velocity_encoder = EgoVelocityEncoder(
             hidden_dim=config.hidden_dim,
-            depth=config.encoder_mixer_depth,
+        )
+        self.ego_displacement_encoder = EgoDisplacementEncoder(
+            time_len=config.time_len,
+            hidden_dim=config.hidden_dim,
         )
         self.neighbor_encoder = NeighborEncoder(
             config.time_len,
-            drop_path_rate=config.encoder_drop_path_rate,
             hidden_dim=config.hidden_dim,
+            drop_path_rate=config.encoder_drop_path_rate,
             depth=config.encoder_mixer_depth,
         )
         self.static_encoder = StaticEncoder(
@@ -89,9 +100,9 @@ class Encoder(nn.Module):
             hidden_dim=config.hidden_dim,
             depth=config.encoder_mixer_depth,
         )
-        self.route_encoder = LaneEncoder(
+        self.route_encoder = RouteEncoder(
             config.route_len,
-            class_type=CLASS_TYPE_ROUTE,
+            route_num=config.route_num,
             drop_path_rate=config.encoder_drop_path_rate,
             hidden_dim=config.hidden_dim,
             depth=config.encoder_mixer_depth,
@@ -112,38 +123,35 @@ class Encoder(nn.Module):
             depth=config.encoder_mixer_depth,
             point_dim=2 + LINE_STRING_TYPE_NUM,
         )
-        self.goal_pose_encoder = GoalPoseEncoder(
-            drop_path_rate=config.encoder_drop_path_rate,
+        self.goal_pose_encoder = VectorEncoder(
+            num_float=4,
             hidden_dim=config.hidden_dim,
+            class_type=CLASS_TYPE_GOAL_POSE,
+            use_input_as_pos=True,
         )
-        self.ego_shape_encoder = FloatsEncoder(
+        self.ego_shape_encoder = VectorEncoder(
             num_float=3,
-            drop_path_rate=config.encoder_drop_path_rate,
             hidden_dim=config.hidden_dim,
+            class_type=CLASS_TYPE_EGO_SHAPE,
         )
-        self.turn_indicator_encoder = FloatsEncoder(
+        self.turn_indicator_encoder = VectorEncoder(
             num_float=INPUT_T,
-            drop_path_rate=config.encoder_drop_path_rate,
             hidden_dim=config.hidden_dim,
+            class_type=CLASS_TYPE_TURN_INDICATOR,
         )
-
-        self.fusion = FusionEncoder(
+        # Pose/type embedding encodes x, y, cos, sin, and class type.
+        self.pose_type_emb = nn.Linear(4 + CLASS_TYPE_NUM, config.hidden_dim)
+        self.fusion = Fusion(
             hidden_dim=config.hidden_dim,
             num_heads=config.num_heads,
             drop_path_rate=config.encoder_drop_path_rate,
-            depth=config.encoder_fusion_depth,
+            depth=config.encoder_mixer_depth,
         )
 
-        # position embedding encode x, y, cos, sin, type
-        self.pos_emb = nn.Linear(4 + CLASS_TYPE_NUM, config.hidden_dim)
+        self._init_parameters()
 
-        # positional embedding for route
-        self.route_position_embedding = nn.Parameter(
-            torch.randn(1, config.route_num, config.hidden_dim)
-        )
-
-        # Initialize transformer layers:
-        def _basic_init(m):
+    def _init_parameters(self) -> None:
+        def _basic_init(m: nn.Module) -> None:
             if isinstance(m, nn.Linear):
                 torch.nn.init.xavier_uniform_(m.weight)
                 if isinstance(m, nn.Linear) and m.bias is not None:
@@ -156,53 +164,55 @@ class Encoder(nn.Module):
 
         self.apply(_basic_init)
 
-        # Initialize embedding MLP:
-        nn.init.normal_(self.pos_emb.weight, std=0.02)
-        nn.init.normal_(self.neighbor_encoder.type_emb.weight, std=0.02)
+        nn.init.normal_(self.pose_type_emb.weight, std=0.02)
         nn.init.normal_(self.lane_encoder.speed_limit_emb.weight, std=0.02)
         nn.init.normal_(self.lane_encoder.attribute_emb.weight, std=0.02)
+        nn.init.normal_(self.route_encoder.lane_encoder.speed_limit_emb.weight, std=0.02)
+        nn.init.normal_(self.route_encoder.lane_encoder.attribute_emb.weight, std=0.02)
 
-    def forward(self, inputs):
-        # ego agent
-        ego = inputs["ego_agent_past"].clone()  # (B, T=INPUT_T + 1, D=4)
-        if not self.use_ego_history:
-            ego = torch.zeros_like(ego)
-        ego = torch.cat(
-            [torch.zeros_like(ego[:, :-6]), ego[:, -6:]],
-            dim=1,
-        )  # Only keep the current + first 5 steps of ego history
+    def forward(self, inputs: dict[str, torch.Tensor]) -> torch.Tensor:
+        """
+        Encode scene observations into context tokens for the decoder.
 
+        Each sub-encoder returns three tensors:
+            encoding: (B, N, hidden_dim)
+            mask:     (B, N), bool, True means the token is invalid or padded
+            pos:      (B, N, 4 + CLASS_TYPE_NUM), used only for positional/type embedding
+
+        The returned tensor has shape (B, self.token_num, hidden_dim). Invalid tokens are
+        kept as all-zero vectors so the decoder can recover the same mask from the output.
+        """
         # agents
-        neighbors = inputs["neighbor_agents_past"].clone()  # (B, N=32, T=21, D=11)
-        neighbors = torch.cat(
-            [torch.zeros_like(neighbors[:, :, :-6]), neighbors[:, :, -6:]],
-            dim=2,
-        )  # Only keep the current + first 5 steps of history
+        neighbors = inputs["neighbor_agents_past"].clone()  # (B, P, T, 11)
 
         # static objects
-        static = inputs["static_objects"]  # (B, P=5, D=10)
+        static = inputs["static_objects"]  # (B, P, 10)
 
         # vector maps
-        lanes = inputs["lanes"]  # (B, P=70, V=20, D=13)
-        lanes_speed_limit = inputs["lanes_speed_limit"]  # (B, P=70, V=20, D=1)
-        lanes_has_speed_limit = inputs["lanes_has_speed_limit"]  # (B, P=70, V=20, D=1)
+        lanes = inputs["lanes"]  # (B, P, V, D)
+        lanes_speed_limit = inputs["lanes_speed_limit"]  # (B, P, 1)
+        lanes_has_speed_limit = inputs["lanes_has_speed_limit"]  # (B, P, 1)
 
         # route
-        route = inputs["route_lanes"]  # (B, P=25, V=20, D=13)
-        route_speed_limit = inputs["route_lanes_speed_limit"]  # (B, P=25, V=20, D=1)
-        route_has_speed_limit = inputs["route_lanes_has_speed_limit"]  # (B, P=25, V=20, D=1)
+        route = inputs["route_lanes"]  # (B, P, V, D)
+        route_speed_limit = inputs["route_lanes_speed_limit"]  # (B, P, 1)
+        route_has_speed_limit = inputs["route_lanes_has_speed_limit"]  # (B, P, 1)
 
         # polygons
-        polygons = inputs["polygons"]  # (B, P=10, V=40, D=2)
+        polygons = inputs["polygons"]  # (B, P, V, D)
 
         # line strings
-        line_strings = inputs["line_strings"]  # (B, P=10, V=20, D=2)
+        line_strings = inputs["line_strings"]  # (B, P, V, D)
 
         # goal pose
         goal_pose = inputs["goal_pose"]  # (B, D=4)
 
         # ego shape
         ego_shape = inputs["ego_shape"]  # (B, D=3)
+
+        # ego velocity and displacement
+        ego_agent_past = inputs["ego_agent_past"]  # (B, T+1, 4) x, y, cos, sin
+        ego_current_speed = inputs["ego_current_state"][:, 4:5]  # (B, 1)
 
         # turn indicator
         turn_indicator = inputs["turn_indicators"][:, :-1]  # (B, T)
@@ -212,12 +222,12 @@ class Encoder(nn.Module):
 
         B = neighbors.shape[0]
 
-        encoding_ego, ego_mask, ego_pos = self.ego_encoder(ego)
-
-        if self.ego_history_dropout_rate > 0:
-            encoding_ego = F.dropout(
-                encoding_ego, p=self.ego_history_dropout_rate, training=self.training
-            )
+        encoding_ego_velocity, ego_velocity_mask, ego_velocity_pos = self.ego_velocity_encoder(
+            ego_current_speed
+        )
+        encoding_ego_displacement, ego_displacement_mask, ego_displacement_pos = (
+            self.ego_displacement_encoder(ego_agent_past)
+        )
 
         encoding_neighbors, neighbors_mask, neighbor_pos = self.neighbor_encoder(neighbors)
         encoding_static, static_mask, static_pos = self.static_encoder(static)
@@ -232,24 +242,15 @@ class Encoder(nn.Module):
             line_strings
         )
 
-        # add positional embedding for route
-        route_num = encoding_route.shape[1]
-        route_position_emb = self.route_position_embedding[:, :route_num]  # (1, P, hidden_dim)
-        route_position_emb = route_position_emb.expand(B, -1, -1)  # (B, P, hidden_dim)
-        valid_route_mask = ~route_mask
-        encoding_route = (
-            encoding_route + route_position_emb * valid_route_mask.unsqueeze(-1).float()
-        )
-
         encoding_goal_pose, goal_pose_mask, goal_pose_pos = self.goal_pose_encoder(goal_pose)
         encoding_ego_shape, ego_shape_mask, ego_shape_pos = self.ego_shape_encoder(ego_shape)
         encoding_turn_indicator, turn_indicator_mask, turn_indicator_pos = (
             self.turn_indicator_encoder(turn_indicator)
         )
-
         encoding_input = torch.cat(
             [
-                encoding_ego,
+                encoding_ego_velocity,
+                encoding_ego_displacement,
                 encoding_neighbors,
                 encoding_static,
                 encoding_lanes,
@@ -263,9 +264,11 @@ class Encoder(nn.Module):
             dim=1,
         )
 
+        # All masks use PyTorch attention-mask polarity: True means invalid/padded.
         encoding_mask = torch.cat(
             [
-                ego_mask,
+                ego_velocity_mask,
+                ego_displacement_mask,
                 neighbors_mask,
                 static_mask,
                 lanes_mask,
@@ -277,11 +280,14 @@ class Encoder(nn.Module):
                 turn_indicator_mask,
             ],
             dim=1,
-        ).view(-1)
+        )
+        encoding_mask_flat = encoding_mask.view(-1)
 
-        encoding_pos = torch.cat(
+        # Add geometry/type positional embedding only to valid tokens.
+        pose_type_input = torch.cat(
             [
-                ego_pos,
+                ego_velocity_pos,
+                ego_displacement_pos,
                 neighbor_pos,
                 static_pos,
                 lane_pos,
@@ -294,124 +300,123 @@ class Encoder(nn.Module):
             ],
             dim=1,
         ).view(B * self.token_num, -1)
-        encoding_pos_result = self.pos_emb(encoding_pos)
-        encoding_pos_result = torch.where(
-            (~encoding_mask).unsqueeze(-1),
-            encoding_pos_result,
-            torch.zeros_like(encoding_pos_result),
+        pose_type_embedding = self.pose_type_emb(pose_type_input)
+        pose_type_embedding = torch.where(
+            (~encoding_mask_flat).unsqueeze(-1),
+            pose_type_embedding,
+            torch.zeros_like(pose_type_embedding),
         )
 
-        encoding_input = encoding_input + encoding_pos_result.view(B, self.token_num, -1)
+        encoder_outputs = encoding_input + pose_type_embedding.view(B, self.token_num, -1)
+        encoder_outputs = self.fusion(encoder_outputs, encoding_mask)
 
-        encoder_outputs = self.fusion(encoding_input, encoding_mask.view(B, self.token_num))
-        encoder_outputs = encoder_outputs.masked_fill(encoding_mask.view(B, self.token_num, 1), 0.0)
+        # Keep invalid tokens exactly zero after normalization. Decoder uses this invariant
+        # to build its cross-attention mask without a separate encoder mask output.
+        encoder_outputs = torch.where(
+            (~encoding_mask_flat).view(B, self.token_num, 1),
+            encoder_outputs,
+            torch.zeros_like(encoder_outputs),
+        )
 
         return encoder_outputs
 
 
-class SelfAttentionBlock(nn.Module):
-    def __init__(self, dim, heads, dropout):
+class EgoVelocityEncoder(nn.Module):
+    def __init__(self, hidden_dim: int) -> None:
         super().__init__()
-        mlp_ratio = 4.0
-
-        self.norm1 = nn.LayerNorm(dim)
-        self.attn = nn.MultiheadAttention(dim, heads, dropout, batch_first=True)
-
-        self.drop_path = DropPath(dropout) if dropout > 0.0 else nn.Identity()
-        self.norm2 = nn.LayerNorm(dim)
-        mlp_hidden_dim = int(dim * mlp_ratio)
-        self.mlp = Mlp(
-            in_features=dim, hidden_features=mlp_hidden_dim, act_layer=nn.GELU, drop=dropout
+        self.encoder = VectorEncoder(
+            num_float=1,
+            hidden_dim=hidden_dim,
+            class_type=CLASS_TYPE_EGO_VELOCITY,
         )
 
-    def forward(self, x, mask):
-        x = x + self.drop_path(
-            self.attn(self.norm1(x), x, x, key_padding_mask=mask, need_weights=False)[0]
-        )
-        x = x + self.drop_path(self.mlp(self.norm2(x)))
-        return x
+    def forward(self, current_speed: torch.Tensor) -> EncoderOutput:
+        """
+        Encode the current ego speed as a single context token.
+
+        Args:
+            current_speed: (B, 1) current velocity from ego_current_state.
+
+        Returns:
+            encoding: (B, 1, hidden_dim)
+            mask: (B, 1), always False
+            pos: (B, 1, 4 + CLASS_TYPE_NUM), neutral pose plus class type
+        """
+        return self.encoder(current_speed)
 
 
-class EgoEncoder(nn.Module):
-    def __init__(self, time_len, drop_path_rate, hidden_dim, depth):
+class EgoDisplacementEncoder(nn.Module):
+    def __init__(self, time_len: int, hidden_dim: int) -> None:
         super().__init__()
-        tokens_mlp_dim = 64
-        channels_mlp_dim = 128
-
-        self._hidden_dim = hidden_dim
-
-        self.channel_pre_project = Mlp(
-            in_features=4,
-            hidden_features=channels_mlp_dim,
-            out_features=channels_mlp_dim,
-            act_layer=nn.GELU,
-            drop=0.0,
-        )
-        self.token_pre_project = Mlp(
-            in_features=time_len,
-            hidden_features=tokens_mlp_dim,
-            out_features=tokens_mlp_dim,
-            act_layer=nn.GELU,
-            drop=0.0,
+        self._time_len = time_len
+        self.encoder = VectorEncoder(
+            num_float=3,
+            hidden_dim=hidden_dim,
+            class_type=CLASS_TYPE_EGO_DISPLACEMENT,
         )
 
-        self.blocks = nn.ModuleList(
-            [MixerBlock(tokens_mlp_dim, channels_mlp_dim, drop_path_rate) for i in range(depth)]
-        )
-
-        self.norm = nn.LayerNorm(channels_mlp_dim)
-        self.emb_project = Mlp(
-            in_features=channels_mlp_dim,
-            hidden_features=hidden_dim,
-            out_features=hidden_dim,
-            act_layer=nn.GELU,
-            drop=drop_path_rate,
-        )
-
-    def forward(self, x):
+    def forward(self, ego_agent_past: torch.Tensor) -> EncoderOutput:
         """
-        x: B, T=21, D=4 (x, y, cos, sin)
+        Encode ego displacements at 1s/2s/3s in the past as a single context token.
+
+        Args:
+            ego_agent_past: (B, time_len + 1, 4) past ego poses (x, y, cos, sin).
+
+        Returns:
+            encoding: (B, 1, hidden_dim)
+            mask: (B, 1), always False
+            pos: (B, 1, 4 + CLASS_TYPE_NUM), neutral pose plus class type
         """
-        B, T, D = x.shape
-        pos = x[:, -1].clone()  # (B, D=4[x, y, cos, sin])
-        pos = pos.unsqueeze(1)  # (B, 1, D=4)
-        pos = add_class_type(pos, CLASS_TYPE_EGO)
+        current_pos = ego_agent_past[:, -1, :2]
+        idx_3s = 0
+        idx_2s = self._time_len - 20
+        idx_1s = self._time_len - 10
 
-        mask = torch.zeros((B, 1), dtype=torch.bool, device=x.device)
-
-        x = self.channel_pre_project(x)
-        x = x.permute(0, 2, 1)
-        x = self.token_pre_project(x)
-        x = x.permute(0, 2, 1)
-
-        for block in self.blocks:
-            x = block(x)
-
-        # pooling
-        x = torch.mean(x, dim=1, keepdim=True)  # (B, 1, C=channels_mlp_dim)
-
-        x = self.emb_project(self.norm(x))  # (B, hidden_dim)
-
-        return x, mask, pos
+        displacement_3s = torch.norm(
+            current_pos - ego_agent_past[:, idx_3s, :2], dim=-1, keepdim=True
+        )
+        displacement_2s = torch.norm(
+            current_pos - ego_agent_past[:, idx_2s, :2], dim=-1, keepdim=True
+        )
+        displacement_1s = torch.norm(
+            current_pos - ego_agent_past[:, idx_1s, :2], dim=-1, keepdim=True
+        )
+        displacements = torch.cat([displacement_3s, displacement_2s, displacement_1s], dim=-1)
+        return self.encoder(displacements)
 
 
 class NeighborEncoder(nn.Module):
-    def __init__(self, time_len, drop_path_rate, hidden_dim, depth):
+    # Number of history timesteps corresponding to the most recent 0.5 seconds.
+    def __init__(
+        self,
+        time_len: int,
+        drop_path_rate: float,
+        hidden_dim: int,
+        depth: int,
+    ) -> None:
         super().__init__()
-        tokens_mlp_dim = 64
-        channels_mlp_dim = 128
 
         self._hidden_dim = hidden_dim
-
-        self.type_emb = nn.Linear(3, channels_mlp_dim)
+        tokens_mlp_dim = 64
+        channels_mlp_dim = 128
+        class_type_num = 3
 
         self.channel_pre_project = Mlp(
-            in_features=8 + 1,
+            in_features=6,
             hidden_features=channels_mlp_dim,
             out_features=channels_mlp_dim,
             act_layer=nn.GELU,
             drop=0.0,
         )
+
+        # Embed neighbor type one-hot vectors.
+        # Linear without bias is equivalent to an embedding lookup for one-hot inputs.
+        self.type_emb = nn.Linear(
+            in_features=class_type_num,
+            out_features=channels_mlp_dim,
+            bias=False,
+        )
+
         self.token_pre_project = Mlp(
             in_features=time_len,
             hidden_features=tokens_mlp_dim,
@@ -421,7 +426,7 @@ class NeighborEncoder(nn.Module):
         )
 
         self.blocks = nn.ModuleList(
-            [MixerBlock(tokens_mlp_dim, channels_mlp_dim, drop_path_rate) for i in range(depth)]
+            [MixerBlock(tokens_mlp_dim, channels_mlp_dim, drop_path_rate) for _ in range(depth)]
         )
 
         self.norm = nn.LayerNorm(channels_mlp_dim)
@@ -433,48 +438,80 @@ class NeighborEncoder(nn.Module):
             drop=drop_path_rate,
         )
 
-    def forward(self, x):
+    def _compute_neighbor_mask(self, neighbor_history: torch.Tensor) -> torch.Tensor:
         """
-        x: B, P, V, D (x, y, cos, sin, vx, vy, w, l, type(3))
+        Mask empty neighbor slots.
+
+        Args:
+            neighbor_history: Neighbor histories, shape (B, P, V, 11).
+
+        Returns:
+            neighbor_invalid_mask: (B, P), True for slots whose state fields are
+                all zero (empty neighbor slots).
         """
-        neighbor_type = x[:, :, -1, 8:]
-        x = x[..., :8]
+        state = neighbor_history[..., :8]
+        zero_step_invalid_mask = torch.sum(torch.ne(state, 0), dim=-1) == 0
+        return torch.all(zero_step_invalid_mask, dim=-1)
 
-        pos = x[:, :, -1, :4].clone()  # x, y, cos, sin
-        pos = add_class_type(pos, CLASS_TYPE_NEIGHBOR)
+    def _latest_neighbor_position(self, latest_neighbor_state: torch.Tensor) -> torch.Tensor:
+        pos = latest_neighbor_state[..., :4].clone()  # x, y, cos, sin
+        return add_neighbor_class_type(pos)
 
+    def forward(self, x: torch.Tensor) -> EncoderOutput:
+        """
+        Args:
+            x: Neighbor histories, shape (B, P, V, 11), fields are
+                x, y, cos, sin, vx, vy, width, length, type_one_hot(3).
+                P is the number of neighbor slots; V is the history length.
+
+        Returns:
+            encoding: (B, P, hidden_dim)
+            mask: (B, P), True for empty neighbor slots.
+            pos: (B, P, 4 + CLASS_TYPE_NUM), latest neighbor pose plus class type
+        """
         B, P, V, _ = x.shape
-        mask_v = torch.sum(torch.ne(x[..., :8], 0), dim=-1).to(x.device) == 0
-        mask_p = torch.sum(~mask_v, dim=-1) == 0
-        x = torch.cat([x, (~mask_v).float().unsqueeze(-1)], dim=-1)
-        x = x.view(B * P, V, -1)
-        x = torch.cat([x[..., :4], torch.zeros_like(x[..., 4:6]), x[..., 6:]], dim=-1)
 
-        valid_indices = ~mask_p.view(-1)
-        x = torch.where(valid_indices.view(-1, 1, 1), x, torch.zeros_like(x))
+        neighbor_invalid_mask = self._compute_neighbor_mask(x)
 
-        x = self.channel_pre_project(x)
+        latest_neighbor_state = x[:, :, -1, :]
+        pos = self._latest_neighbor_position(latest_neighbor_state)
+
+        # Keep x, y, cos, sin, width, length.
+        state_feat = x[..., [0, 1, 2, 3, 6, 7]]
+
+        # Keep neighbor type one-hot.
+        type_one_hot = x[..., 8:]
+
+        state_feat = state_feat.reshape(B * P, V, -1)
+        type_one_hot = type_one_hot.reshape(B * P, V, -1)
+
+        valid_slot_mask = ~neighbor_invalid_mask.reshape(-1)
+
+        # Project state features and add type embedding.
+        x = self.channel_pre_project(state_feat)
+        x = x + self.type_emb(type_one_hot)
+
         x = x.permute(0, 2, 1)
         x = self.token_pre_project(x)
         x = x.permute(0, 2, 1)
+
         for block in self.blocks:
             x = block(x)
 
-        # pooling
         x = torch.mean(x, dim=1)
 
-        neighbor_type = neighbor_type.view(B * P, -1)
-        type_embedding = self.type_emb(neighbor_type)
-        x = x + type_embedding
-
         x = self.emb_project(self.norm(x))
-        x_result = x * valid_indices.float().unsqueeze(-1)
+        x = x * valid_slot_mask.to(dtype=x.dtype).unsqueeze(-1)
 
-        return x_result.view(B, P, -1), mask_p.reshape(B, -1), pos.view(B, P, -1)
+        return (
+            x.reshape(B, P, -1),
+            neighbor_invalid_mask.reshape(B, -1),
+            pos.reshape(B, P, -1),
+        )
 
 
 class StaticEncoder(nn.Module):
-    def __init__(self, dim, drop_path_rate, hidden_dim):
+    def __init__(self, dim: int, drop_path_rate: float, hidden_dim: int) -> None:
         super().__init__()
 
         self._hidden_dim = hidden_dim
@@ -487,28 +524,42 @@ class StaticEncoder(nn.Module):
             drop=drop_path_rate,
         )
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> EncoderOutput:
         """
-        x: B, P, D (x, y, cos, sin, w, l, type(4))
+        Args:
+            x: Static objects, shape (B, P, D), with pose and object attributes.
+                P is the number of static-object slots.
+
+        Returns:
+            encoding: (B, P, hidden_dim)
+            mask: (B, P), True when the static-object slot is empty
+            pos: (B, P, 4 + CLASS_TYPE_NUM), object pose plus class type
         """
         B, P, _ = x.shape
 
         pos = x[:, :, :4].clone()  # x, y, cos, sin
         pos = add_class_type(pos, CLASS_TYPE_STATIC)
 
-        mask_p = torch.sum(torch.ne(x[..., :10], 0), dim=-1).to(x.device) == 0
-        valid_indices = ~mask_p.view(-1)
+        static_invalid_mask = torch.sum(torch.ne(x[..., :10], 0), dim=-1).to(x.device) == 0
+        valid_slot_mask = ~static_invalid_mask.view(-1)
 
         x = x.view(B * P, -1)
-        x = torch.where(valid_indices.view(-1, 1), x, torch.zeros_like(x))
+        x = torch.where(valid_slot_mask.view(-1, 1), x, torch.zeros_like(x))
         x_result = self.projection(x)
-        x_result = x_result * valid_indices.float().unsqueeze(-1)
+        x_result = x_result * valid_slot_mask.float().unsqueeze(-1)
 
-        return x_result.view(B, P, -1), mask_p.view(B, P), pos.view(B, P, -1)
+        return x_result.view(B, P, -1), static_invalid_mask.view(B, P), pos.view(B, P, -1)
 
 
 class LaneEncoder(nn.Module):
-    def __init__(self, lane_len, class_type, drop_path_rate, hidden_dim, depth):
+    def __init__(
+        self,
+        lane_len: int,
+        class_type: int,
+        drop_path_rate: float,
+        hidden_dim: int,
+        depth: int,
+    ) -> None:
         super().__init__()
         tokens_mlp_dim = 64
         channels_mlp_dim = 128
@@ -552,11 +603,24 @@ class LaneEncoder(nn.Module):
             drop=drop_path_rate,
         )
 
-    def forward(self, x, speed_limit, has_speed_limit):
+    def forward(
+        self,
+        x: torch.Tensor,
+        speed_limit: torch.Tensor,
+        has_speed_limit: torch.Tensor,
+    ) -> EncoderOutput:
         """
-        x: B, P, V, D (x, y, x'-x, y'-y, x_left-x, y_left-y, x_right-x, y_right-y, traffic(5) + line_type(2 * 10))
-        speed_limit: B, P, 1
-        has_speed_limit: B, P, 1
+        Args:
+            x: Lane or route polylines, shape (B, P, V, D). The first 8 fields are
+                center/left/right geometry; remaining fields are traffic and line type.
+                P is the number of lane/route slots; V is the number of points per polyline.
+            speed_limit: (B, P, 1)
+            has_speed_limit: (B, P, 1), bool-like tensor
+
+        Returns:
+            encoding: (B, P, hidden_dim)
+            mask: (B, P), True when every point in the lane/route slot is empty
+            pos: (B, P, 4 + CLASS_TYPE_NUM), midpoint pose plus class type
         """
         attribute = x[:, :, 0, 8:]
         x = x[..., :8]
@@ -569,14 +633,14 @@ class LaneEncoder(nn.Module):
         pos = add_class_type(pos, self._class_type)
 
         B, P, V, _ = x.shape
-        mask_v = torch.sum(torch.ne(x[..., :8], 0), dim=-1).to(x.device) == 0
-        mask_p = torch.sum(~mask_v, dim=-1) == 0
-        valid_indices = ~mask_p.view(-1)
+        polyline_point_invalid_mask = torch.sum(torch.ne(x[..., :8], 0), dim=-1).to(x.device) == 0
+        lane_invalid_mask = torch.sum(~polyline_point_invalid_mask, dim=-1) == 0
+        valid_slot_mask = ~lane_invalid_mask.view(-1)
 
         x = x.view(B * P, V, -1)
 
-        # Use torch.where instead of indexing to maintain fixed size
-        x = torch.where(valid_indices.view(-1, 1, 1), x, torch.zeros_like(x))
+        # Preserve fixed tensor size while zeroing invalid slots.
+        x = torch.where(valid_slot_mask.view(-1, 1, 1), x, torch.zeros_like(x))
 
         x = self.channel_pre_project(x)
         x = x.permute(0, 2, 1)
@@ -605,14 +669,66 @@ class LaneEncoder(nn.Module):
         x = x + speed_limit_embedding + traffic_light_embedding
         x = self.emb_project(self.norm(x))
 
-        # Apply mask to zero out invalid positions
-        x = x * valid_indices.float().unsqueeze(-1)
+        # Invalid slots stay zero so downstream mask recovery remains reliable.
+        x = x * valid_slot_mask.float().unsqueeze(-1)
 
-        return x.view(B, P, -1), mask_p.reshape(B, -1), pos.view(B, P, -1)
+        return x.view(B, P, -1), lane_invalid_mask.reshape(B, -1), pos.view(B, P, -1)
+
+
+class RouteEncoder(nn.Module):
+    def __init__(
+        self,
+        route_len: int,
+        route_num: int,
+        drop_path_rate: float,
+        hidden_dim: int,
+        depth: int,
+    ) -> None:
+        super().__init__()
+
+        self.lane_encoder = LaneEncoder(
+            route_len,
+            class_type=CLASS_TYPE_ROUTE,
+            drop_path_rate=drop_path_rate,
+            hidden_dim=hidden_dim,
+            depth=depth,
+        )
+        self.route_position_embedding = nn.Parameter(torch.randn(1, route_num, hidden_dim))
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        speed_limit: torch.Tensor,
+        has_speed_limit: torch.Tensor,
+    ) -> EncoderOutput:
+        """
+        Encode route lane tokens and add a learnable order embedding.
+
+        Route lanes share the same geometry encoder as lanes. The extra route-position
+        embedding tells the decoder where each token sits in the ordered route sequence.
+        The embedding is applied only to valid route slots; mask uses True == invalid.
+        """
+        encoding, mask, pos = self.lane_encoder(x, speed_limit, has_speed_limit)
+
+        route_token_num = encoding.shape[1]
+        route_position_emb = self.route_position_embedding[:, :route_token_num]
+        route_position_emb = route_position_emb.expand(encoding.shape[0], -1, -1)
+        valid_route_slot_mask = ~mask
+        encoding = encoding + route_position_emb * valid_route_slot_mask.unsqueeze(-1).float()
+
+        return encoding, mask, pos
 
 
 class LineEncoder(nn.Module):
-    def __init__(self, line_len, class_type, drop_path_rate, hidden_dim, depth, point_dim=2):
+    def __init__(
+        self,
+        line_len: int,
+        class_type: int,
+        drop_path_rate: float,
+        hidden_dim: int,
+        depth: int,
+        point_dim: int = 2,
+    ) -> None:
         super().__init__()
         self._class_type = class_type
         tokens_mlp_dim = 64
@@ -621,7 +737,7 @@ class LineEncoder(nn.Module):
         self._line_len = line_len
 
         self.channel_pre_project = Mlp(
-            in_features=point_dim + 2,  # point_dim (x, y, type_one_hot...) + dx + dy
+            in_features=point_dim,
             hidden_features=channels_mlp_dim,
             out_features=channels_mlp_dim,
             act_layer=nn.GELU,
@@ -648,36 +764,40 @@ class LineEncoder(nn.Module):
             drop=drop_path_rate,
         )
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> EncoderOutput:
         """
-        x: B, P, V, D(x, y)
+        Args:
+            x: Polygon or line-string points, shape (B, P, V, D). The first two fields
+                are x, y; optional remaining fields are type indicators.
+                P is the number of polygon/line-string slots; V is the number of points.
+
+        Returns:
+            encoding: (B, P, hidden_dim)
+            mask: (B, P), True when every point in the slot is empty
+            pos: (B, P, 4 + CLASS_TYPE_NUM), midpoint xy with neutral heading plus class type
         """
         B, P, V, D = x.shape
-        # diffを取る
-        diff_x = x[:, :, 1:, 0] - x[:, :, :-1, 0]  # (B, P, V-1)
-        diff_y = x[:, :, 1:, 1] - x[:, :, :-1, 1]  # (B, P, V-1)
-        diff_x = torch.cat([diff_x, torch.zeros_like(diff_x[:, :, :1])], dim=2)  # (B, P, V)
-        diff_x = diff_x.view(B, P, V, 1)
-        diff_y = torch.cat([diff_y, torch.zeros_like(diff_y[:, :, :1])], dim=2)  # (B, P, V)
-        diff_y = diff_y.view(B, P, V, 1)
-        x = torch.concat([x, diff_x, diff_y], dim=-1)  # (B, P, V, D+2)
 
-        pos = x[:, :, int(self._line_len / 2), :4].clone()  # x, y, x'-x, y'-y
-        heading = torch.atan2(pos[..., 3], pos[..., 2])
+        pos_xy = x[:, :, int(self._line_len / 2), :2].clone()
         pos = torch.stack(
-            [pos[..., 0], pos[..., 1], torch.cos(heading), torch.sin(heading)], dim=-1
+            [
+                pos_xy[..., 0],
+                pos_xy[..., 1],
+                torch.ones_like(pos_xy[..., 0]),
+                torch.zeros_like(pos_xy[..., 0]),
+            ],
+            dim=-1,
         )
         pos = add_class_type(pos, self._class_type)
 
-        B, P, V, _ = x.shape
-        mask_v = torch.sum(torch.ne(x[..., :4], 0), dim=-1).to(x.device) == 0
-        mask_p = torch.sum(~mask_v, dim=-1) == 0
-        valid_indices = ~mask_p.view(-1)
+        point_invalid_mask = torch.sum(torch.ne(x[..., :2], 0), dim=-1).to(x.device) == 0
+        line_invalid_mask = torch.sum(~point_invalid_mask, dim=-1) == 0
+        valid_slot_mask = ~line_invalid_mask.view(-1)
 
         x = x.view(B * P, V, -1)
 
-        # Use torch.where instead of indexing to maintain fixed size
-        x = torch.where(valid_indices.view(-1, 1, 1), x, torch.zeros_like(x))
+        # Preserve fixed tensor size while zeroing invalid slots.
+        x = torch.where(valid_slot_mask.view(-1, 1, 1), x, torch.zeros_like(x))
 
         x = self.channel_pre_project(x)
         x = x.permute(0, 2, 1)
@@ -690,121 +810,143 @@ class LineEncoder(nn.Module):
 
         x = self.emb_project(self.norm(x))
 
-        # Apply mask to zero out invalid positions
-        x = x * valid_indices.float().unsqueeze(-1)
+        # Invalid slots stay zero so downstream mask recovery remains reliable.
+        x = x * valid_slot_mask.float().unsqueeze(-1)
 
-        return x.view(B, P, -1), mask_p.reshape(B, -1), pos.view(B, P, -1)
+        return x.view(B, P, -1), line_invalid_mask.reshape(B, -1), pos.view(B, P, -1)
 
 
-class GoalPoseEncoder(nn.Module):
-    def __init__(self, drop_path_rate, hidden_dim):
+class VectorEncoder(nn.Module):
+    def __init__(
+        self,
+        num_float: int,
+        hidden_dim: int,
+        class_type: int,
+        use_input_as_pos: bool = False,
+        dropout_ratio: float = 0.0,
+    ) -> None:
         super().__init__()
-        channels_mlp_dim = 128
-
-        self._hidden_dim = hidden_dim
-
-        self.channel_pre_project = Mlp(
-            in_features=4,
-            hidden_features=channels_mlp_dim,
-            out_features=channels_mlp_dim,
-            act_layer=nn.GELU,
-            drop=0.0,
+        assert not use_input_as_pos or num_float >= 4, (
+            "VectorEncoder requires at least 4 inputs when using input as position"
         )
 
-        self.norm = nn.LayerNorm(channels_mlp_dim)
-        self.emb_project = Mlp(
-            in_features=channels_mlp_dim,
-            hidden_features=hidden_dim,
-            out_features=hidden_dim,
-            act_layer=nn.GELU,
-            drop=drop_path_rate,
-        )
-
-    def forward(self, x):
-        """
-        x: B, D=4 (x, y, cos, sin)
-        """
-        B, D = x.shape
-        pos = x.clone()  # (B, D=4[x, y, cos, sin])
-        pos = pos.unsqueeze(1)  # (B, 1, D=4)
-        pos = add_class_type(pos, CLASS_TYPE_GOAL_POSE)
-
-        mask = torch.zeros((B, 1), dtype=torch.bool, device=x.device)
-
-        x = self.channel_pre_project(x)  # (B, C=channels_mlp_dim)
-        x = x.unsqueeze(1)  # (B, 1, C=channels_mlp_dim)
-
-        x = self.emb_project(self.norm(x))  # (B, 1, hidden_dim)
-
-        return x, mask, pos
-
-
-class FloatsEncoder(nn.Module):
-    def __init__(self, num_float, drop_path_rate, hidden_dim):
-        super().__init__()
-        channels_mlp_dim = 128
-
         self._hidden_dim = hidden_dim
+        self._class_type = class_type
+        self._use_input_as_pos = use_input_as_pos
+        self._dropout_ratio = dropout_ratio
 
-        self.channel_pre_project = Mlp(
+        self.projection = Mlp(
             in_features=num_float,
-            hidden_features=channels_mlp_dim,
-            out_features=channels_mlp_dim,
+            hidden_features=hidden_dim,
+            out_features=hidden_dim,
             act_layer=nn.GELU,
             drop=0.0,
         )
 
-        self.norm = nn.LayerNorm(channels_mlp_dim)
-        self.emb_project = Mlp(
-            in_features=channels_mlp_dim,
-            hidden_features=hidden_dim,
+    def forward(self, x: torch.Tensor) -> EncoderOutput:
+        """
+        Encode a dense vector as one required context token.
+
+        Args:
+            x: Dense vector input, shape (B, D). Used for goal pose, ego shape,
+                turn indicators, and ego speed.
+
+        Returns:
+            encoding: (B, 1, hidden_dim)
+            mask: (B, 1), False for required tokens. Tokens with a configured dropout
+                ratio can be masked during training.
+            pos: (B, 1, 4 + CLASS_TYPE_NUM). Uses input pose when use_input_as_pos=True;
+                otherwise uses a neutral pose at the origin.
+        """
+        B, D = x.shape
+        if self._use_input_as_pos:
+            pos = x[:, :4].clone()
+        else:
+            pos = torch.cat(
+                [
+                    torch.zeros((B, 2), device=x.device, dtype=x.dtype),
+                    torch.ones((B, 1), device=x.device, dtype=x.dtype),
+                    torch.zeros((B, 1), device=x.device, dtype=x.dtype),
+                ],
+                dim=-1,
+            )
+        pos = pos.unsqueeze(1)  # (B, 1, D=4)
+        pos = add_class_type(pos, self._class_type)
+
+        mask = torch.zeros((B, 1), dtype=torch.bool, device=x.device)
+        if self.training and self._dropout_ratio > 0:
+            drop_mask = torch.rand((B, 1), device=x.device) < self._dropout_ratio
+            mask = mask | drop_mask
+
+        x = self.projection(x).unsqueeze(1)  # (B, 1, hidden_dim)
+        x = x * (~mask).unsqueeze(-1).to(dtype=x.dtype)
+
+        return x, mask, pos
+
+
+class FusionBlock(nn.Module):
+    def __init__(self, hidden_dim: int, num_heads: int, drop_path_rate: float) -> None:
+        super().__init__()
+        self.attn_norm = nn.LayerNorm(hidden_dim)
+        self.self_attn = nn.MultiheadAttention(
+            embed_dim=hidden_dim,
+            num_heads=num_heads,
+            dropout=drop_path_rate,
+            batch_first=True,
+        )
+        self.ffn_norm = nn.LayerNorm(hidden_dim)
+        self.ffn = Mlp(
+            in_features=hidden_dim,
+            hidden_features=hidden_dim * 4,
             out_features=hidden_dim,
             act_layer=nn.GELU,
             drop=drop_path_rate,
         )
 
-    def forward(self, x):
-        """
-        x: B, D
-        """
-        B, D = x.shape
-        pos = torch.cat(
-            [
-                torch.zeros((B, 2), device=x.device),
-                torch.ones((B, 1), device=x.device),
-                torch.zeros((B, 1), device=x.device),
-            ],
-            dim=-1,
+    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        valid_mask = (~mask).unsqueeze(-1)
+
+        normed_x = self.attn_norm(x)
+        x = (
+            x
+            + self.self_attn(
+                normed_x,
+                normed_x,
+                normed_x,
+                key_padding_mask=mask,
+                need_weights=False,
+            )[0]
         )
-        pos = pos.unsqueeze(1)  # (B, 1, D=4)
-        pos = add_class_type(pos, CLASS_TYPE_EGO_SHAPE)
+        x = torch.where(valid_mask, x, torch.zeros_like(x))
 
-        mask = torch.zeros((B, 1), dtype=torch.bool, device=x.device)
-
-        x = self.channel_pre_project(x)  # (B, C=channels_mlp_dim)
-        x = x.unsqueeze(1)  # (B, 1, C=channels_mlp_dim)
-
-        x = self.emb_project(self.norm(x))  # (B, 1, hidden_dim)
-
-        return x, mask, pos
+        x = x + self.ffn(self.ffn_norm(x))
+        return torch.where(valid_mask, x, torch.zeros_like(x))
 
 
-class FusionEncoder(nn.Module):
-    def __init__(self, hidden_dim, num_heads, drop_path_rate, depth):
+class Fusion(nn.Module):
+    def __init__(
+        self,
+        hidden_dim: int,
+        num_heads: int,
+        drop_path_rate: float,
+        depth: int,
+    ) -> None:
         super().__init__()
-
-        dpr = drop_path_rate
-
         self.blocks = nn.ModuleList(
-            [SelfAttentionBlock(hidden_dim, num_heads, dropout=dpr) for i in range(depth)]
+            [FusionBlock(hidden_dim, num_heads, drop_path_rate) for _ in range(depth)]
         )
 
-        self.norm = nn.LayerNorm(hidden_dim)
+    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        """
+        Fuse tokenized scene features with self-attention.
 
-    def forward(self, x, mask):
-        mask = torch.cat([torch.zeros_like(mask[:, :1]), mask[:, 1:]], dim=1)
+        Args:
+            x: Context tokens, shape (B, N, hidden_dim).
+            mask: Invalid token mask, shape (B, N). True means invalid/padded.
 
-        for b in self.blocks:
-            x = b(x, mask)
-
-        return self.norm(x)
+        Returns:
+            Fused context tokens, shape (B, N, hidden_dim). Invalid tokens stay zero.
+        """
+        for block in self.blocks:
+            x = block(x, mask)
+        return x

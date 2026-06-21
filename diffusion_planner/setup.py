@@ -11,11 +11,7 @@ setuptools.setup(
     name="diffusion_planner",
     version="1.0.0",
     author="Zheng Yinan, Ruiming Liang, Kexin Zheng @ Tsinghua AIR",
-    # find_packages so subpackages (metrics/model/utils) ship in the wheel;
-    # include= scopes discovery to the diffusion_planner tree.
-    packages=setuptools.find_packages(
-        where=".", include=["diffusion_planner", "diffusion_planner.*"]
-    ),
+    packages=["diffusion_planner"],
     package_dir={"": "."},
     classifiers=[
         "Programming Language :: Python :: 3.9",

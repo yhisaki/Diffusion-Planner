@@ -39,7 +39,7 @@ def ddp_setup_universal(verbose=False, args=None):
     dist_backend = "nccl"
     # I don't know why but this is needed for DDP to work instead of 'env://'
     dist_url = "file://"
-    file_path = "/tmp/tmp_dist_init"
+    file_path = os.environ.get("DIST_INIT_FILE", "/tmp/tmp_dist_init")
     print("| distributed init (rank {}): {}, gpu {}".format(rank, dist_url, gpu), flush=True)
     init_process_group(
         init_method=f"{dist_url}{file_path}",
@@ -101,7 +101,10 @@ def reduce_and_average_losses(loss_dict, device):
     torch.distributed.barrier()
     world_size = dist.get_world_size()
     for key in loss_dict.keys():
-        loss_tensor = torch.tensor([loss_dict[key].item()]).to(device)
+        value = loss_dict[key]
+        if isinstance(value, torch.Tensor):
+            value = value.detach().item()
+        loss_tensor = torch.tensor([value], device=device, dtype=torch.float32)
         dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
         loss_dict[key] = loss_tensor.item() / world_size
     return loss_dict
