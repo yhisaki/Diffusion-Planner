@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from timm.layers import Mlp
 
 
@@ -10,6 +11,29 @@ def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch
 
 def _approx_gelu() -> nn.Module:
     return nn.GELU(approximate="tanh")
+
+
+class SinusoidalTimeEmbedding(nn.Module):
+    """Embed scalar diffusion times with fixed sinusoidal frequencies."""
+
+    def __init__(self, dim: int, max_period: float = 10_000.0) -> None:
+        super().__init__()
+        self.dim = dim
+        half_dim = dim // 2
+        frequencies = torch.exp(
+            -torch.log(torch.tensor(max_period))
+            * torch.arange(half_dim, dtype=torch.float32)
+            / max(half_dim, 1)
+        )
+        self.register_buffer("frequencies", frequencies, persistent=False)
+
+    def forward(self, t: torch.Tensor) -> torch.Tensor:
+        """Return an embedding with shape ``(*t.shape, dim)``."""
+        angles = t.float().unsqueeze(-1) * self.frequencies
+        embedding = torch.cat([torch.cos(angles), torch.sin(angles)], dim=-1)
+        if self.dim % 2:
+            embedding = F.pad(embedding, (0, 1))
+        return embedding
 
 
 class DiTBlock(nn.Module):
@@ -149,13 +173,7 @@ class DiT(nn.Module):
             act_layer=nn.GELU,
             drop=0.0,
         )
-        self.t_embedder = Mlp(
-            in_features=trajectory_len,
-            hidden_features=512,
-            out_features=hidden_dim,
-            act_layer=nn.GELU,
-            drop=0.0,
-        )
+        self.t_embedder = SinusoidalTimeEmbedding(hidden_dim)
         self.blocks = nn.ModuleList([
             DiTBlock(hidden_dim, heads, dropout, mlp_ratio) for i in range(depth)
         ])
@@ -192,7 +210,7 @@ class DiT(nn.Module):
         t = t.reshape(B, P, T)  # (B, P, T)
 
         x = self.preproj(x)  # (B, P, hidden_dim)
-        t = self.t_embedder(t)  # (B, P, hidden_dim)
+        t = self.t_embedder(t[..., 0])  # (B, P, hidden_dim)
 
         x_embedding = self.agent_embedding(agent_class)  # (B, P, hidden_dim)
         x = x + x_embedding

@@ -77,7 +77,7 @@ def get_args():
     parser.add_argument("--seed", type=int, default=3407)
     parser.add_argument("--train_epochs", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=512)
-    parser.add_argument("--learning_rate", type=float, default=3e-4)
+    parser.add_argument("--learning_rate", type=float, default=1e-4)
     parser.add_argument("--warmup_steps", type=int, default=1000)
     parser.add_argument("--encoder_drop_path_rate", type=float, default=0.1)
     parser.add_argument("--decoder_drop_path_rate", type=float, default=0.1)
