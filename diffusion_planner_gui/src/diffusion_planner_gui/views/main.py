@@ -12,6 +12,7 @@ from diffusion_planner_gui.visualization import (
     plot_tcos,
     plot_trajectory,
     plot_tsin,
+    plot_tv,
     plot_tx,
     plot_ty,
 )
@@ -72,6 +73,8 @@ def render_main() -> None:
         st.plotly_chart(plot_tcos(data, prediction), width="stretch")
     with col4:
         st.plotly_chart(plot_tsin(data, prediction), width="stretch")
+
+    st.plotly_chart(plot_tv(data, prediction), width="stretch")
 
     with st.sidebar:
         info = f"Sample {idx + 1} / {n_total} — {npz_path.name}"

@@ -86,3 +86,46 @@ def future_heading_cos_sin(
         return None
     t = np.arange(len(cos_vals))
     return t, cos_vals, sin_vals
+
+
+def past_speeds(data: dict[str, np.ndarray]) -> tuple[np.ndarray, np.ndarray] | None:
+    """Extract ego past speed from ``ego_velocity_past`` joined with current state.
+
+    Returns ``(t, speeds)`` where speed is the magnitude of (vx, vy) at each
+    step.  Falls back to ``ego_agent_past`` displacement if velocity is absent.
+    """
+    ego_state = data["ego_current_state"].reshape(-1)
+    cur_speed = float(np.linalg.norm(ego_state[4:6]))
+
+    if "ego_velocity_past" in data:
+        vel = data["ego_velocity_past"].reshape(-1, data["ego_velocity_past"].shape[-1])
+        speeds = np.linalg.norm(vel[:, :2].astype(np.float64), axis=1)
+        speeds = np.append(speeds, cur_speed)
+        t = np.arange(-len(speeds) + 1, 1)
+        return t, speeds
+
+    if "ego_agent_past" in data:
+        past = data["ego_agent_past"].reshape(-1, data["ego_agent_past"].shape[-1])
+        if past.shape[0] >= 2:
+            d = np.linalg.norm(np.diff(past[:, :2].astype(np.float64), axis=0), axis=1)
+            speeds = d / 0.1
+            speeds = np.append(speeds, cur_speed)
+            t = np.arange(-len(speeds) + 1, 1)
+            return t, speeds
+
+    return None
+
+
+def future_speeds(data: dict[str, np.ndarray]) -> tuple[np.ndarray, np.ndarray] | None:
+    """Extract ego future speed from ``ego_velocity_future`` starting at current state."""
+    ego_state = data["ego_current_state"].reshape(-1)
+    cur_speed = float(np.linalg.norm(ego_state[4:6]))
+
+    if "ego_velocity_future" in data:
+        vel = data["ego_velocity_future"].reshape(-1, data["ego_velocity_future"].shape[-1])
+        speeds = np.linalg.norm(vel[:, :2].astype(np.float64), axis=1)
+        speeds = np.hstack([cur_speed, speeds])
+        t = np.arange(len(speeds))
+        return t, speeds
+
+    return None

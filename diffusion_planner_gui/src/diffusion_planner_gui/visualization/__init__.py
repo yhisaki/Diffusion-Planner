@@ -17,5 +17,5 @@ Prediction format
 """
 
 from .prediction import plot_prediction_vs_gt
-from .timeseries import plot_tcos, plot_tsin, plot_tx, plot_ty
+from .timeseries import plot_tcos, plot_tsin, plot_tv, plot_tx, plot_ty
 from .trajectory import plot_trajectory

@@ -15,8 +15,10 @@ import plotly.graph_objects as go
 
 from ._timeseries import (
     future_heading_cos_sin,
+    future_speeds,
     past_heading_cos_sin,
     past_positions,
+    past_speeds,
 )
 
 _PRED_COLOR = "#1F77B4"
@@ -354,3 +356,73 @@ def plot_tsin(data: dict[str, np.ndarray], prediction: np.ndarray | None = None)
 
 
 # ---------------------------------------------------------------------------
+# t-v (velocity)
+# ---------------------------------------------------------------------------
+
+
+def plot_tv(data: dict[str, np.ndarray], prediction: np.ndarray | None = None) -> go.Figure:
+    """Plot ego speed over time (past and future).
+
+    Uses ``ego_velocity_past`` / ``ego_velocity_future`` if available;
+    falls back to displacement-based speed otherwise.
+
+    Args:
+        data: NPZ data dict.
+        prediction: Optional model output.
+
+    Returns:
+        Plotly Figure with past speed (orange) and future speed (black) traces.
+    """
+    fig = go.Figure()
+    has_data = False
+
+    pr = past_speeds(data)
+    if pr is not None:
+        t, speeds = pr
+        fig.add_trace(
+            go.Scatter(
+                x=t,
+                y=speeds,
+                mode="lines+markers",
+                name="Past speed",
+                line=dict(color="orange", width=2),
+                marker=dict(size=3),
+            )
+        )
+        has_data = True
+
+    ego_pred = _extract_ego_prediction(prediction)
+
+    if "ego_velocity_future" in data or "ego_agent_future" in data:
+        fr = future_speeds(data)
+        if fr is not None:
+            t, speeds = fr
+            gt_opacity = 0.35 if ego_pred is not None else 1.0
+            fig.add_trace(
+                go.Scatter(
+                    x=t,
+                    y=speeds,
+                    mode="lines+markers",
+                    name="GT speed",
+                    line=dict(color="black", width=2),
+                    marker=dict(size=3),
+                    opacity=gt_opacity,
+                )
+            )
+            has_data = True
+
+    title = "V"
+    if not has_data:
+        fig.update_layout(template="plotly_white", title="V", height=400)
+        return fig
+
+    fig.update_layout(
+        template="plotly_white",
+        title=title,
+        xaxis_title="Time step",
+        yaxis_title="speed [m/s]",
+        height=400,
+        margin=dict(l=50, r=20, t=40, b=40),
+        legend=dict(font=dict(size=9)),
+    )
+    return fig
