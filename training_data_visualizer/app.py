@@ -17,9 +17,11 @@ import plotly.graph_objects as go
 
 from training_data_visualizer.loader import discover_npz_files, load_npz
 from training_data_visualizer.visualization import (
+    plot_acceleration,
     plot_trajectory,
     plot_tx,
     plot_ty,
+    plot_velocity,
 )
 
 
@@ -33,10 +35,10 @@ class TrainingDataViewer:
     def load_current(
         self,
         time_step: int = 0,
-    ) -> tuple[object, object, object, str, str, int]:
-        """Load data for current index and return (traj_fig, tx_fig, ty_fig, info, ego_state, index)."""
+    ) -> tuple[object, object, object, object, object, str, str, int]:
+        """Load data for current index and return (traj_fig, tx_fig, ty_fig, vel_fig, accel_fig, info, ego_state, index)."""
         if not self.npz_paths:
-            return go_empty(), go_empty(), go_empty(), "No NPZ files found", "", 0
+            return go_empty(), go_empty(), go_empty(), go_empty(), go_empty(), "No NPZ files found", "", 0
 
         idx = max(0, min(self.current_index, len(self.npz_paths) - 1))
         self.current_index = idx
@@ -45,11 +47,13 @@ class TrainingDataViewer:
         traj_fig = plot_trajectory(data, time_step=time_step if time_step > 0 else None)
         tx_fig = plot_tx(data)
         ty_fig = plot_ty(data)
+        vel_fig = plot_velocity(data)
+        accel_fig = plot_acceleration(data)
         info = f"Sample {idx + 1} / {len(self.npz_paths)} — {self.npz_paths[idx].name}"
         ego_state = data["ego_current_state"].reshape(-1)
         labels = ["x", "y", "cos", "sin", "vx", "vy", "ax", "ay", "steering_angle", "yaw_rate"]
         ego_state_str = "\n".join(f"{labels[i]}: {ego_state[i]:.4f}" for i in range(len(ego_state)))
-        return traj_fig, tx_fig, ty_fig, info, ego_state_str, idx
+        return traj_fig, tx_fig, ty_fig, vel_fig, accel_fig, info, ego_state_str, idx
 
     def navigate(self, delta: int, *args) -> tuple:
         self.current_index = max(0, min(len(self.npz_paths) - 1, self.current_index + delta))
@@ -113,9 +117,11 @@ def build_interface(viewer: TrainingDataViewer) -> gr.Blocks:
                 traj_plot = gr.Plot(label="Trajectory View")
                 tx_plot = gr.Plot(label="t-x")
                 ty_plot = gr.Plot(label="t-y")
+                vel_plot = gr.Plot(label="Velocity")
+                accel_plot = gr.Plot(label="Acceleration")
 
         _gen_inputs = [time_step_sl]
-        _outputs = [traj_plot, tx_plot, ty_plot, info_text, ego_state_text, sample_slider]
+        _outputs = [traj_plot, tx_plot, ty_plot, vel_plot, accel_plot, info_text, ego_state_text, sample_slider]
 
         import functools
 

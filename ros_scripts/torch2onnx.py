@@ -25,6 +25,7 @@ torch.backends.mha.set_fastpath_enabled(False)
 FULL_INPUT_NAMES = [
     "sampled_trajectories",
     "ego_agent_past",
+    "ego_velocity_past",
     "ego_current_state",
     "neighbor_agents_past",
     "static_objects",
@@ -44,6 +45,7 @@ FULL_INPUT_NAMES = [
 
 ENCODER_INPUT_NAMES = [
     "ego_agent_past",
+    "ego_velocity_past",
     "neighbor_agents_past",
     "static_objects",
     "lanes",
@@ -64,14 +66,17 @@ DECODER_INPUT_NAMES = [
     "sampled_trajectories",
     "diffusion_time",
     "neighbor_agents_past",
+    "stop_bool",
 ]
 
 TURN_INDICATOR_INPUT_NAMES = ["encoding", "final_x0"]
+SPEED_PREDICTOR_INPUT_NAMES = ["encoding"]
 
-FULL_OUTPUT_NAMES = ["prediction", "turn_indicator_logit"]
+FULL_OUTPUT_NAMES = ["prediction", "turn_indicator_logit", "stop_logits"]
 ENCODER_OUTPUT_NAMES = ["encoding"]
 DECODER_OUTPUT_NAMES = ["model_output"]
 TURN_INDICATOR_OUTPUT_NAMES = ["turn_indicator_logit"]
+SPEED_PREDICTOR_OUTPUT_NAMES = ["stop_logits"]
 
 TensorDict = dict[str, torch.Tensor]
 NumpyDict = dict[str, np.ndarray]
@@ -83,6 +88,7 @@ class ModelWrappers:
     encoder: nn.Module
     decoder: nn.Module
     turn_indicator: nn.Module
+    speed_predictor: nn.Module
 
 
 @dataclass(frozen=True)
@@ -139,6 +145,7 @@ class EncoderONNXWrapper(nn.Module):
     def forward(
         self,
         ego_agent_past: torch.Tensor,
+        ego_velocity_past: torch.Tensor,
         neighbor_agents_past: torch.Tensor,
         static_objects: torch.Tensor,
         lanes: torch.Tensor,
@@ -155,6 +162,7 @@ class EncoderONNXWrapper(nn.Module):
     ) -> torch.Tensor:
         inputs = {
             "ego_agent_past": ego_agent_past,
+            "ego_velocity_past": ego_velocity_past,
             "neighbor_agents_past": neighbor_agents_past,
             "static_objects": static_objects,
             "lanes": lanes,
@@ -189,6 +197,7 @@ class DecoderONNXWrapper(nn.Module):
         sampled_trajectories: torch.Tensor,
         diffusion_time: torch.Tensor,
         neighbor_agents_past: torch.Tensor,
+        stop_bool: torch.Tensor,
     ) -> torch.Tensor:
         neighbors_current = neighbor_agents_past[:, : self.decoder._predicted_neighbor_num, -1, :4]
         neighbor_current_mask = torch.sum(torch.ne(neighbors_current, 0), dim=-1) == 0
@@ -204,6 +213,7 @@ class DecoderONNXWrapper(nn.Module):
             diffusion_time,
             encoding,
             neighbor_current_mask,
+            stop_bool=stop_bool,
         ).reshape(batch_size, agent_num, 1 + self.decoder._future_len, 4)
 
         return model_output
@@ -228,6 +238,17 @@ class TurnIndicatorONNXWrapper(nn.Module):
         return self.decoder._compute_turn_indicator(ego_trajectory, encoding_pooled)
 
 
+class SpeedPredictorONNXWrapper(nn.Module):
+    """Stop/speed-state head evaluated once from the encoder output."""
+
+    def __init__(self, model: Diffusion_Planner):
+        super().__init__()
+        self.stop_predictor = model.decoder.stop_predictor
+
+    def forward(self, encoding: torch.Tensor) -> torch.Tensor:
+        return self.stop_predictor(encoding)
+
+
 class FullONNXWrapper(nn.Module):
     """Original all-in-one planner export."""
 
@@ -239,6 +260,7 @@ class FullONNXWrapper(nn.Module):
         self,
         sampled_trajectories: torch.Tensor,
         ego_agent_past: torch.Tensor,
+        ego_velocity_past: torch.Tensor,
         ego_current_state: torch.Tensor,
         neighbor_agents_past: torch.Tensor,
         static_objects: torch.Tensor,
@@ -254,10 +276,11 @@ class FullONNXWrapper(nn.Module):
         ego_shape: torch.Tensor,
         turn_indicators: torch.Tensor,
         delay: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         inputs = {
             "sampled_trajectories": sampled_trajectories,
             "ego_agent_past": ego_agent_past,
+            "ego_velocity_past": ego_velocity_past,
             "ego_current_state": ego_current_state,
             "neighbor_agents_past": neighbor_agents_past,
             "static_objects": static_objects,
@@ -275,7 +298,11 @@ class FullONNXWrapper(nn.Module):
             "delay": delay,
         }
         _, decoder_outputs = self.model(inputs)
-        return decoder_outputs["prediction"], decoder_outputs["turn_indicator_logit"]
+        return (
+            decoder_outputs["prediction"],
+            decoder_outputs["turn_indicator_logit"],
+            decoder_outputs["stop_logits"],
+        )
 
 
 def build_inputs_from_npz(npz_path: Path) -> TensorDict:
@@ -287,6 +314,9 @@ def build_inputs_from_npz(npz_path: Path) -> TensorDict:
     inputs["ego_agent_past"] = heading_to_cos_sin(
         torch.tensor(data["ego_agent_past"], dtype=torch.float32).unsqueeze(0)
     )
+    inputs["ego_velocity_past"] = torch.tensor(
+        data["ego_velocity_past"], dtype=torch.float32
+    ).unsqueeze(0)
     inputs["ego_current_state"] = torch.tensor(
         data["ego_current_state"], dtype=torch.float32
     ).unsqueeze(0)
@@ -330,6 +360,7 @@ def build_dummy_inputs() -> TensorDict:
         1, MAX_NUM_AGENTS, OUTPUT_T + 1, POSE_DIM, dtype=torch.float32
     )
     inputs["ego_agent_past"] = torch.randn(1, INPUT_T + 1, POSE_DIM, dtype=torch.float32)
+    inputs["ego_velocity_past"] = torch.randn(1, INPUT_T + 1, 2, dtype=torch.float32)
     inputs["ego_current_state"] = torch.randn(1, 10, dtype=torch.float32)
     inputs["neighbor_agents_past"] = torch.randn(
         1, MAX_NUM_NEIGHBORS, INPUT_T + 1, 11, dtype=torch.float32
@@ -368,12 +399,13 @@ def load_validation_inputs(eval_npz_path: Path | None) -> TensorDict:
     return build_dummy_inputs()
 
 
-def build_decoder_inputs(inputs: TensorDict, encoding: torch.Tensor) -> TensorDict:
+def build_decoder_inputs(inputs: TensorDict, encoding: torch.Tensor, stop_logits: torch.Tensor) -> TensorDict:
     return {
         "encoding": encoding,
         "sampled_trajectories": inputs["sampled_trajectories"],
         "diffusion_time": torch.ones(1, MAX_NUM_AGENTS, OUTPUT_T + 1, 1, dtype=torch.float32),
         "neighbor_agents_past": inputs["neighbor_agents_past"],
+        "stop_bool": stop_logits > 0,
     }
 
 
@@ -411,6 +443,7 @@ def build_wrappers(model: Diffusion_Planner) -> ModelWrappers:
         encoder=EncoderONNXWrapper(model).eval(),
         decoder=DecoderONNXWrapper(model).eval(),
         turn_indicator=TurnIndicatorONNXWrapper(model).eval(),
+        speed_predictor=SpeedPredictorONNXWrapper(model).eval(),
     )
 
 
@@ -423,6 +456,7 @@ def build_export_specs(
     encoder_onnx_path: Path,
     decoder_onnx_path: Path,
     turn_indicator_onnx_path: Path,
+    speed_predictor_onnx_path: Path,
 ) -> list[ExportSpec]:
     return [
         ExportSpec(
@@ -452,6 +486,13 @@ def build_export_specs(
             input_names=TURN_INDICATOR_INPUT_NAMES,
             output_names=TURN_INDICATOR_OUTPUT_NAMES,
             output_path=turn_indicator_onnx_path,
+        ),
+        ExportSpec(
+            wrapper=wrappers.speed_predictor,
+            inputs={"encoding": decoder_inputs["encoding"]},
+            input_names=SPEED_PREDICTOR_INPUT_NAMES,
+            output_names=SPEED_PREDICTOR_OUTPUT_NAMES,
+            output_path=speed_predictor_onnx_path,
         ),
     ]
 
@@ -573,18 +614,21 @@ def validate_full_model(
     full_onnx_path: Path,
 ) -> None:
     with torch.no_grad():
-        torch_prediction, torch_turn_indicator = wrappers.full(
+        torch_prediction, torch_turn_indicator, torch_stop_logits = wrappers.full(
             *(inputs[name] for name in FULL_INPUT_NAMES)
         )
 
     full_onnx_inputs = {name: inputs[name].cpu().numpy() for name in FULL_INPUT_NAMES}
-    onnx_prediction, onnx_turn_indicator = run_ort_in_subprocess(full_onnx_path, full_onnx_inputs)
+    onnx_prediction, onnx_turn_indicator, onnx_stop_logits = run_ort_in_subprocess(
+        full_onnx_path, full_onnx_inputs
+    )
     compare("prediction", torch_prediction.cpu().numpy(), onnx_prediction)
     compare(
         "full_turn_indicator_logit",
         torch_turn_indicator.cpu().numpy(),
         onnx_turn_indicator,
     )
+    compare("full_stop_logits", torch_stop_logits.cpu().numpy(), onnx_stop_logits)
 
 
 def validate_split_models(
@@ -594,6 +638,7 @@ def validate_split_models(
     encoder_onnx_path: Path,
     decoder_onnx_path: Path,
     turn_indicator_onnx_path: Path,
+    speed_predictor_onnx_path: Path,
 ) -> None:
     with torch.no_grad():
         torch_encoding = wrappers.encoder(*(inputs[name] for name in ENCODER_INPUT_NAMES))
@@ -602,18 +647,26 @@ def validate_split_models(
             decoder_inputs["sampled_trajectories"],
             decoder_inputs["diffusion_time"],
             decoder_inputs["neighbor_agents_past"],
+            decoder_inputs["stop_bool"],
         )
         torch_turn_indicator = wrappers.turn_indicator(torch_encoding, torch_model_output)
+        torch_stop_logits = wrappers.speed_predictor(torch_encoding)
 
     encoder_onnx_inputs = {name: inputs[name].cpu().numpy() for name in ENCODER_INPUT_NAMES}
     onnx_encoding = run_ort_in_subprocess(encoder_onnx_path, encoder_onnx_inputs)[0]
     compare("encoding", torch_encoding.cpu().numpy(), onnx_encoding)
+
+    onnx_stop_logits = run_ort_in_subprocess(
+        speed_predictor_onnx_path, {"encoding": onnx_encoding}
+    )[0]
+    compare("stop_logits", torch_stop_logits.cpu().numpy(), onnx_stop_logits)
 
     decoder_onnx_inputs = {
         "encoding": onnx_encoding,
         "sampled_trajectories": decoder_inputs["sampled_trajectories"].cpu().numpy(),
         "diffusion_time": decoder_inputs["diffusion_time"].cpu().numpy(),
         "neighbor_agents_past": decoder_inputs["neighbor_agents_past"].cpu().numpy(),
+        "stop_bool": onnx_stop_logits > 0,
     }
     onnx_model_output = run_ort_in_subprocess(decoder_onnx_path, decoder_onnx_inputs)[0]
     compare("model_output", torch_model_output.cpu().numpy(), onnx_model_output)
@@ -635,6 +688,7 @@ def convert_model(
     encoder_onnx_path: Path,
     decoder_onnx_path: Path,
     turn_indicator_onnx_path: Path,
+    speed_predictor_onnx_path: Path,
     eval_npz_path: Path | None,
     use_ema: bool = False,
     use_simplify: bool = False,
@@ -648,6 +702,7 @@ def convert_model(
     print(f"Encoder output: {encoder_onnx_path}")
     print(f"Decoder output: {decoder_onnx_path}")
     print(f"Turn indicator output: {turn_indicator_onnx_path}")
+    print(f"Speed predictor output: {speed_predictor_onnx_path}")
     print(f"Using EMA: {use_ema}")
     print("ONNX exporter: legacy")
     print(f"ONNX opset version: {opset_version}")
@@ -665,14 +720,16 @@ def convert_model(
 
     with torch.no_grad():
         encoding = wrappers.encoder(*(export_inputs[name] for name in ENCODER_INPUT_NAMES))
+        stop_logits = wrappers.speed_predictor(encoding)
 
-    decoder_inputs = build_decoder_inputs(export_inputs, encoding)
+    decoder_inputs = build_decoder_inputs(export_inputs, encoding, stop_logits)
     with torch.no_grad():
         final_x0 = wrappers.decoder(
             decoder_inputs["encoding"],
             decoder_inputs["sampled_trajectories"],
             decoder_inputs["diffusion_time"],
             decoder_inputs["neighbor_agents_past"],
+            decoder_inputs["stop_bool"],
         )
     turn_indicator_inputs = build_turn_indicator_inputs(encoding, final_x0)
 
@@ -685,6 +742,7 @@ def convert_model(
         encoder_onnx_path,
         decoder_onnx_path,
         turn_indicator_onnx_path,
+        speed_predictor_onnx_path,
     )
     for spec in export_specs:
         export_spec(spec, use_simplify, opset_version, external_data)
@@ -695,7 +753,10 @@ def convert_model(
         validation_encoding = wrappers.encoder(
             *(validation_inputs[name] for name in ENCODER_INPUT_NAMES)
         )
-    validation_decoder_inputs = build_decoder_inputs(validation_inputs, validation_encoding)
+        validation_stop_logits = wrappers.speed_predictor(validation_encoding)
+    validation_decoder_inputs = build_decoder_inputs(
+        validation_inputs, validation_encoding, validation_stop_logits
+    )
 
     validate_full_model(wrappers, validation_inputs, full_onnx_path)
     validate_split_models(
@@ -705,6 +766,7 @@ def convert_model(
         encoder_onnx_path,
         decoder_onnx_path,
         turn_indicator_onnx_path,
+        speed_predictor_onnx_path,
     )
 
     print(
@@ -713,6 +775,7 @@ def convert_model(
         f"\n  {encoder_onnx_path}"
         f"\n  {decoder_onnx_path}"
         f"\n  {turn_indicator_onnx_path}\n"
+        f"  {speed_predictor_onnx_path}\n"
     )
 
 
@@ -727,7 +790,7 @@ if __name__ == "__main__":
         print(f"Error: '{root_dir}' is not a directory")
         exit(1)
 
-    pth_files = list(root_dir.rglob("*.pth"))
+    pth_files = list(root_dir.rglob("latest.pth"))
     print(f"Found {len(pth_files)} .pth file(s) in '{root_dir}'")
 
     skipped_count = 0
@@ -738,6 +801,7 @@ if __name__ == "__main__":
         encoder_onnx_file = pth_dir / f"{args.output_prefix}_encoder.onnx"
         decoder_onnx_file = pth_dir / f"{args.output_prefix}_decoder.onnx"
         turn_indicator_onnx_file = pth_dir / f"{args.output_prefix}_turn_indicator.onnx"
+        speed_predictor_onnx_file = pth_dir / f"{args.output_prefix}_speed_predictor.onnx"
 
         print(f"\n{'#' * 80}")
         print(f"Processing: {pth_file.relative_to(root_dir)}")
@@ -754,6 +818,7 @@ if __name__ == "__main__":
             encoder_onnx_path=encoder_onnx_file,
             decoder_onnx_path=decoder_onnx_file,
             turn_indicator_onnx_path=turn_indicator_onnx_file,
+            speed_predictor_onnx_path=speed_predictor_onnx_file,
             eval_npz_path=args.eval_npz,
             use_ema=args.use_ema,
             use_simplify=args.use_simplify,

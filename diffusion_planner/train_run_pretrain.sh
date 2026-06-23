@@ -1,7 +1,7 @@
 #!/bin/bash
 set -ux
 exp_name=${1}
-TRAIN_SET_LIST=${2:-/mnt/nvme/dataset/basic_dataset/path_list_train.json}
+TRAIN_SET_LIST=${2:-/mnt/nvme/dataset/dataset_hisaki/path_list_train.json}
 DEBUG=${3:-False}
 
 # to convert full paths

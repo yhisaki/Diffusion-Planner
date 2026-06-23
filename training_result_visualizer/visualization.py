@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import plotly.graph_objects as go
+from diffusion_planner.model.module.decoder import STOP_INDICES
 
 from training_data_visualizer.visualization import plot_trajectory
 
@@ -102,6 +103,66 @@ def plot_prediction_components(
     )
 
     return fig_x, fig_y
+
+
+def plot_stop_prediction(
+    data: dict[str, np.ndarray], stop_logits: np.ndarray | None,
+) -> go.Figure:
+    """Plot stop GT and predicted probability at STOP_INDICES time steps."""
+    if stop_logits is None or "ego_velocity_future" not in data:
+        return _empty_figure("Stop Prediction")
+
+    ego_vel_future = data["ego_velocity_future"]
+    if ego_vel_future.ndim == 3:
+        ego_vel_future = ego_vel_future.reshape(-1, ego_vel_future.shape[-1])
+    stop_gt = (np.abs(ego_vel_future[STOP_INDICES, 0]) <= 1e-3).astype(float)
+
+    logits = np.asarray(stop_logits).flatten()
+    prob = 1.0 / (1.0 + np.exp(-logits))
+
+    t = np.array(STOP_INDICES)
+
+    fig = go.Figure()
+
+    if "ego_velocity_past" in data:
+        ego_vel_past = data["ego_velocity_past"]
+        if ego_vel_past.ndim == 3:
+            ego_vel_past = ego_vel_past.reshape(-1, ego_vel_past.shape[-1])
+        n_past = len(ego_vel_past)
+        stop_binary_past = (np.abs(ego_vel_past[:, 0]) <= 1e-3).astype(float)
+        t_past = np.arange(-n_past + 1, 1)
+        fig.add_trace(go.Scatter(
+            x=t_past, y=stop_binary_past,
+            mode="lines+markers",
+            line=dict(color="#2CA02C", width=1),
+            marker=dict(size=4, color="#2CA02C"),
+            opacity=0.5,
+            name="Stop Binary (past)",
+        ))
+
+    fig.add_trace(go.Scatter(
+        x=t, y=stop_gt,
+        mode="markers",
+        marker=dict(size=10, color="#2CA02C", symbol="circle"),
+        name="GT",
+    ))
+    fig.add_trace(go.Scatter(
+        x=t, y=prob,
+        mode="lines+markers",
+        line=dict(color="#D62728", width=2, dash="dash"),
+        marker=dict(size=8, color="#D62728", symbol="diamond"),
+        name="Pred",
+    ))
+    fig.update_layout(
+        title="Stop Prediction",
+        xaxis_title="Time step",
+        yaxis_title="Stop probability",
+        yaxis=dict(range=[-0.1, 1.1]),
+        margin=dict(l=40, r=20, t=40, b=40),
+        height=280,
+    )
+
+    return fig
 
 
 def _as_agent_prediction(prediction: np.ndarray) -> np.ndarray:

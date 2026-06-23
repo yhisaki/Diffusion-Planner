@@ -65,11 +65,9 @@ class Encoder(nn.Module):
             + turn_indicator_num
         )
 
-        self.ego_encoder = EgoEncoder(
-            config.time_len,
-            drop_path_rate=config.encoder_drop_path_rate,
+        self.ego_encoder = EgoVelocityEncoder(
+            seq_len=config.time_len,
             hidden_dim=config.hidden_dim,
-            depth=config.encoder_mixer_depth,
         )
         self.neighbor_encoder = NeighborEncoder(
             config.time_len,
@@ -164,13 +162,10 @@ class Encoder(nn.Module):
 
     def forward(self, inputs):
         # ego agent
-        ego = inputs["ego_agent_past"].clone()  # (B, T=INPUT_T + 1, D=4)
+        ego_current_pose = inputs["ego_agent_past"][:, -1, :4].clone()  # (B, 4)
+        ego_velocity = inputs["ego_velocity_past"].clone()  # (B, T, 2)
         if not self.use_ego_history:
-            ego = torch.zeros_like(ego)
-        ego = torch.cat(
-            [ego[:, :6], torch.zeros_like(ego[:, 6:])],
-            dim=1,
-        )  # Only keep the current + first 5 steps of ego history
+            ego_velocity = torch.zeros_like(ego_velocity)
 
         # agents
         neighbors = inputs["neighbor_agents_past"].clone()  # (B, N=32, T=21, D=11)
@@ -212,7 +207,7 @@ class Encoder(nn.Module):
 
         B = neighbors.shape[0]
 
-        encoding_ego, ego_mask, ego_pos = self.ego_encoder(ego)
+        encoding_ego, ego_mask, ego_pos = self.ego_encoder(ego_velocity, ego_current_pose)
 
         if self.ego_history_dropout_rate > 0:
             encoding_ego = F.dropout(
@@ -303,7 +298,11 @@ class Encoder(nn.Module):
 
         encoding_input = encoding_input + encoding_pos_result.view(B, self.token_num, -1)
 
-        encoder_outputs = self.fusion(encoding_input, encoding_mask.view(B, self.token_num))
+        token_mask = encoding_mask.view(B, self.token_num)
+        encoder_outputs = self.fusion(encoding_input, token_mask)
+
+        # Zero-fill invalid token positions so downstream modules can derive the mask
+        encoder_outputs = encoder_outputs * (~token_mask).float().unsqueeze(-1)
 
         return encoder_outputs
 
@@ -329,67 +328,52 @@ class SelfAttentionBlock(nn.Module):
         return x
 
 
-class EgoEncoder(nn.Module):
-    def __init__(self, time_len, drop_path_rate, hidden_dim, depth):
+class BoolSequenceEncoder(nn.Module):
+    def __init__(self, seq_len: int, hidden_dim: int, out_dim: int):
         super().__init__()
-        tokens_mlp_dim = 64
-        channels_mlp_dim = 128
+        self.embedding = nn.Embedding(2, hidden_dim)
+        self.encoder = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(seq_len * hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.LayerNorm(hidden_dim),
+            nn.Linear(hidden_dim, out_dim),
+        )
 
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, T) bool or int64
+        x = x.long()
+        x = self.embedding(x)  # (B, T, H)
+        token = self.encoder(x)  # (B, out_dim)
+        return token
+
+
+class EgoVelocityEncoder(nn.Module):
+    def __init__(self, seq_len: int, hidden_dim: int):
+        super().__init__()
         self._hidden_dim = hidden_dim
+        emb_dim = 64
+        self.bool_encoder = BoolSequenceEncoder(seq_len, emb_dim, hidden_dim)
 
-        self.channel_pre_project = Mlp(
-            in_features=4,
-            hidden_features=channels_mlp_dim,
-            out_features=channels_mlp_dim,
-            act_layer=nn.GELU,
-            drop=0.0,
-        )
-        self.token_pre_project = Mlp(
-            in_features=time_len,
-            hidden_features=tokens_mlp_dim,
-            out_features=tokens_mlp_dim,
-            act_layer=nn.GELU,
-            drop=0.0,
-        )
-
-        self.blocks = nn.ModuleList(
-            [MixerBlock(tokens_mlp_dim, channels_mlp_dim, drop_path_rate) for i in range(depth)]
-        )
-
-        self.norm = nn.LayerNorm(channels_mlp_dim)
-        self.emb_project = Mlp(
-            in_features=channels_mlp_dim,
-            hidden_features=hidden_dim,
-            out_features=hidden_dim,
-            act_layer=nn.GELU,
-            drop=drop_path_rate,
-        )
-
-    def forward(self, x):
+    def forward(self, ego_velocity, ego_current_pose):
         """
-        x: B, T=21, D=4 (x, y, cos, sin)
+        ego_velocity: (B, T, 2) - x, y velocities
+        ego_current_pose: (B, 4) - current pose (x, y, cos, sin)
         """
-        B, T, D = x.shape
-        pos = x[:, -1].clone()  # (B, D=4[x, y, cos, sin])
-        pos = pos.unsqueeze(1)  # (B, 1, D=4)
+        B = ego_velocity.shape[0]
+
+        vel_x = ego_velocity[:, :, 0]  # (B, T)
+        vel_bool = vel_x.abs() > 1e-3  # (B, T)
+
+        encoding = self.bool_encoder(vel_bool)  # (B, hidden_dim)
+        encoding = encoding.unsqueeze(1)  # (B, 1, hidden_dim)
+
+        pos = ego_current_pose.clone().unsqueeze(1)  # (B, 1, 4)
         pos = add_class_type(pos, CLASS_TYPE_EGO)
 
-        mask = torch.zeros((B, 1), dtype=torch.bool, device=x.device)
+        mask = torch.zeros((B, 1), dtype=torch.bool, device=ego_velocity.device)
 
-        x = self.channel_pre_project(x)
-        x = x.permute(0, 2, 1)
-        x = self.token_pre_project(x)
-        x = x.permute(0, 2, 1)
-
-        for block in self.blocks:
-            x = block(x)
-
-        # pooling
-        x = torch.mean(x, dim=1, keepdim=True)  # (B, 1, C=channels_mlp_dim)
-
-        x = self.emb_project(self.norm(x))  # (B, hidden_dim)
-
-        return x, mask, pos
+        return encoding, mask, pos
 
 
 class NeighborEncoder(nn.Module):
@@ -592,6 +576,7 @@ class LaneEncoder(nn.Module):
         unknown_speed_emb = self.unknown_speed_emb(
             torch.zeros(B * P, dtype=torch.long, device=x.device)
         )
+        has_speed_limit = has_speed_limit.bool()
         speed_limit_embedding = torch.where(has_speed_limit, speed_limit_emb, unknown_speed_emb)
 
         # Process traffic lights for all positions

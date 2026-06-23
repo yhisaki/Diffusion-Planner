@@ -621,3 +621,119 @@ def plot_ty(data: dict[str, np.ndarray]) -> go.Figure:
         legend=dict(font=dict(size=9)),
     )
     return fig
+
+
+def plot_velocity(data: dict[str, np.ndarray]) -> go.Figure:
+    fig = go.Figure()
+    has_data = False
+
+    if "ego_velocity_past" in data:
+        past = data["ego_velocity_past"].reshape(-1, 2)
+        n = len(past)
+        t = np.arange(-n, 0)
+        fig.add_trace(go.Scatter(
+            x=t, y=past[:, 0], mode="lines+markers", name="Past vx",
+            line=dict(color="orange", width=2), marker=dict(size=3),
+        ))
+        fig.add_trace(go.Scatter(
+            x=t, y=past[:, 1], mode="lines+markers", name="Past vy",
+            line=dict(color="orange", width=2, dash="dash"), marker=dict(size=3),
+        ))
+        has_data = True
+
+    ego_state = data["ego_current_state"].reshape(-1)
+    if len(ego_state) >= 6:
+        fig.add_trace(go.Scatter(
+            x=[0], y=[ego_state[4]], mode="markers", name="Current vx",
+            marker=dict(size=8, color="red", symbol="diamond"),
+        ))
+        fig.add_trace(go.Scatter(
+            x=[0], y=[ego_state[5]], mode="markers", name="Current vy",
+            marker=dict(size=8, color="red", symbol="circle"),
+        ))
+        has_data = True
+
+    if "ego_velocity_future" in data:
+        future = data["ego_velocity_future"].reshape(-1, 2)
+        t = np.arange(1, len(future) + 1)
+        fig.add_trace(go.Scatter(
+            x=t, y=future[:, 0], mode="lines+markers", name="Future vx",
+            line=dict(color="black", width=2), marker=dict(size=3),
+        ))
+        fig.add_trace(go.Scatter(
+            x=t, y=future[:, 1], mode="lines+markers", name="Future vy",
+            line=dict(color="black", width=2, dash="dash"), marker=dict(size=3),
+        ))
+        has_data = True
+
+    if not has_data:
+        fig.update_layout(title="Velocity (no data)", height=400)
+        return fig
+
+    fig.update_layout(
+        title="Velocity",
+        xaxis_title="Time step",
+        yaxis_title="Velocity [m/s]",
+        height=400,
+        margin=dict(l=50, r=20, t=40, b=40),
+        legend=dict(font=dict(size=9)),
+    )
+    return fig
+
+
+def plot_acceleration(data: dict[str, np.ndarray]) -> go.Figure:
+    fig = go.Figure()
+    has_data = False
+
+    if "ego_acceleration_past" in data:
+        past = data["ego_acceleration_past"].reshape(-1, 2)
+        n = len(past)
+        t = np.arange(-n, 0)
+        fig.add_trace(go.Scatter(
+            x=t, y=past[:, 0], mode="lines+markers", name="Past ax",
+            line=dict(color="orange", width=2), marker=dict(size=3),
+        ))
+        fig.add_trace(go.Scatter(
+            x=t, y=past[:, 1], mode="lines+markers", name="Past ay",
+            line=dict(color="orange", width=2, dash="dash"), marker=dict(size=3),
+        ))
+        has_data = True
+
+    ego_state = data["ego_current_state"].reshape(-1)
+    if len(ego_state) >= 8:
+        fig.add_trace(go.Scatter(
+            x=[0], y=[ego_state[6]], mode="markers", name="Current ax",
+            marker=dict(size=8, color="red", symbol="diamond"),
+        ))
+        fig.add_trace(go.Scatter(
+            x=[0], y=[ego_state[7]], mode="markers", name="Current ay",
+            marker=dict(size=8, color="red", symbol="circle"),
+        ))
+        has_data = True
+
+    if "ego_acceleration_future" in data:
+        future = data["ego_acceleration_future"].reshape(-1, 2)
+        t = np.arange(1, len(future) + 1)
+        fig.add_trace(go.Scatter(
+            x=t, y=future[:, 0], mode="lines+markers", name="Future ax",
+            line=dict(color="black", width=2), marker=dict(size=3),
+        ))
+        fig.add_trace(go.Scatter(
+            x=t, y=future[:, 1], mode="lines+markers", name="Future ay",
+            line=dict(color="black", width=2, dash="dash"), marker=dict(size=3),
+        ))
+        has_data = True
+
+    if not has_data:
+        fig.update_layout(title="Acceleration (no data)", height=400)
+        return fig
+
+    fig.update_layout(
+        title="Acceleration",
+        xaxis_title="Time step",
+        yaxis_title="Acceleration [m/s^2]",
+        height=400,
+        margin=dict(l=50, r=20, t=40, b=40),
+        legend=dict(font=dict(size=9)),
+    )
+    return fig

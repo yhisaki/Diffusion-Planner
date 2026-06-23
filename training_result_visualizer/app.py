@@ -20,6 +20,7 @@ from training_result_visualizer.loader import load_path_list
 from training_result_visualizer.visualization import (
     plot_prediction_components,
     plot_prediction_vs_gt,
+    plot_stop_prediction,
 )
 
 
@@ -61,35 +62,38 @@ class TrainingResultViewer:
         if not self.npz_paths:
             raise gr.Error("path_list.json に有効な NPZ path がありません。")
         self.current_index = 0
-        traj_fig, fig_x, fig_y, info, idx = self.load_current()
-        return traj_fig, fig_x, fig_y, info, idx, max(0, len(self.npz_paths) - 1)
+        traj_fig, fig_x, fig_y, fig_stop, info, idx = self.load_current()
+        return traj_fig, fig_x, fig_y, fig_stop, info, idx, max(0, len(self.npz_paths) - 1)
 
     def load_current(
         self, time_step: int = 0, view_range: int = 60
-    ) -> tuple[object, object, object, str, int]:
+    ) -> tuple[object, object, object, object, str, int]:
         empty = go.Figure()
         if not self.npz_paths:
-            return empty, empty, empty, "No path list loaded", 0
+            return empty, empty, empty, empty, "No path list loaded", 0
         if self.predictor is None:
-            return empty, empty, empty, "No model loaded", 0
+            return empty, empty, empty, empty, "No model loaded", 0
 
         idx = max(0, min(self.current_index, len(self.npz_paths) - 1))
         self.current_index = idx
         npz_path = self.npz_paths[idx]
         data = load_npz(npz_path)
-        prediction = self.predictor.predict(npz_path)
+        result = self.predictor.predict(npz_path)
+        prediction = result["prediction"]
+        stop_logits = result["stop_logits"]
         marker_step = time_step if time_step > 0 else None
         traj_fig = plot_prediction_vs_gt(
             data, prediction, view_range=view_range, time_step=marker_step
         )
         fig_x, fig_y = plot_prediction_components(data, prediction)
+        fig_stop = plot_stop_prediction(data, stop_logits)
         info = (
             f"Sample {idx + 1} / {len(self.npz_paths)}\n"
             f"NPZ: {npz_path}\n"
             f"Model: {self.model_path}\n"
             f"Device: {self.device_name}"
         )
-        return traj_fig, fig_x, fig_y, info, idx
+        return traj_fig, fig_x, fig_y, fig_stop, info, idx
 
     def navigate(self, delta: int, *args) -> tuple:
         self.current_index = max(0, min(len(self.npz_paths) - 1, self.current_index + delta))
@@ -154,13 +158,14 @@ def build_interface(viewer: TrainingResultViewer) -> gr.Blocks:
                 with gr.Row():
                     plot_x = gr.Plot(label="Prediction x")
                     plot_y = gr.Plot(label="Prediction y")
+                plot_stop = gr.Plot(label="Stop Prediction")
 
         reload_inputs = [time_step, view_range]
-        outputs = [traj_plot, plot_x, plot_y, info_text, sample_slider]
+        outputs = [traj_plot, plot_x, plot_y, plot_stop, info_text, sample_slider]
 
         def _configure(*args):
-            traj_fig, fig_x, fig_y, info, idx, max_idx = viewer.configure(*args)
-            return traj_fig, fig_x, fig_y, info, gr.update(value=idx, maximum=max(1, max_idx))
+            traj_fig, fig_x, fig_y, fig_stop, info, idx, max_idx = viewer.configure(*args)
+            return traj_fig, fig_x, fig_y, fig_stop, info, gr.update(value=idx, maximum=max(1, max_idx))
 
         btn_load.click(
             _configure,

@@ -24,7 +24,10 @@ from diffusion_planner.model.flow_matching_utils.ode_solver import (
     rk4_integration,
 )
 from diffusion_planner.model.module.dit import DiT
+from diffusion_planner.model.module.stop_predictor import StopPredictor
 from diffusion_planner.utils.normalizer import ObservationNormalizer, StateNormalizer
+
+STOP_INDICES = [0, 9, 19, 29, 39, 49, 59, 69, 79]
 
 
 def generate_prefix_mask(delay: torch.Tensor, num_agents: int, max_len: int) -> torch.Tensor:
@@ -267,6 +270,16 @@ def compute_training_loss(
         )
         loss["turn_indicator_accuracy"] = turn_indicator_accuracy
 
+    stop_logits = decoder_output["stop_logits"]  # [B, 9]
+    stop_gt = decoder_output["stop_gt"]  # [B, 9] bool
+    loss["ego_stop_loss"] = nn.functional.binary_cross_entropy_with_logits(
+        stop_logits, stop_gt.float()
+    )
+
+    with torch.no_grad():
+        stop_pred = stop_logits > 0
+        loss["ego_stop_accuracy"] = (stop_pred == stop_gt).float().mean()
+
     return loss
 
 
@@ -288,6 +301,7 @@ class Decoder(nn.Module):
         self.turn_indicator_predictor = nn.Linear(
             2 * (self._future_len // 10) + config.hidden_dim, TURN_INDICATOR_OUTPUT_DIM
         )
+        self.stop_predictor = StopPredictor(config.hidden_dim, num_steps=len(STOP_INDICES))
 
         self._state_normalizer: StateNormalizer = config.state_normalizer
         self._observation_normalizer: ObservationNormalizer = config.observation_normalizer
@@ -317,6 +331,9 @@ class Decoder(nn.Module):
         # Zero-out output layers:
         nn.init.constant_(self.dit.final_layer.proj[-1].weight, 0)
         nn.init.constant_(self.dit.final_layer.proj[-1].bias, 0)
+        # Zero-init stop embedding so it has no effect at initialization
+        nn.init.constant_(self.dit.stop_emb.weight, 0)
+        nn.init.constant_(self.dit.stop_emb.bias, 0)
 
     def _prepare_current_states(self, inputs):
         """Extract and prepare current states for ego and neighbors.
@@ -365,10 +382,15 @@ class Decoder(nn.Module):
             encoding_pooled: [B, D] pooled encoding
 
         Returns:
-            Dict containing model_output and turn_indicator_logit
+            Dict containing model_output, turn_indicator_logit, stop_logits, stop_gt
         """
         B = encoding.shape[0]
         P = 1 + self._predicted_neighbor_num
+
+        # Stop prediction: predict from encoding, condition on GT for decoder
+        stop_logits = self.stop_predictor(encoding)  # (B, 9)
+        ego_vel_future = inputs["ego_velocity_future"]  # (B, 80, 2)
+        stop_gt = ego_vel_future[:, STOP_INDICES, 0].abs() <= 1e-3  # (B, 9)
 
         sampled_trajectories = inputs["sampled_trajectories"].reshape(
             B, P, (1 + self._future_len), 4
@@ -385,12 +407,22 @@ class Decoder(nn.Module):
                 diffusion_time,
                 encoding,
                 neighbor_current_mask,
+                stop_bool=stop_gt,
             ).reshape(B, P, -1, 4),
             "turn_indicator_logit": turn_indicator_logit,
+            "stop_logits": stop_logits,
+            "stop_gt": stop_gt,
         }
 
     def _inference_flow_matching(
-        self, encoding, inputs, current_states, neighbor_current_mask, encoding_pooled, sampled_trajectories
+        self,
+        encoding,
+        inputs,
+        current_states,
+        neighbor_current_mask,
+        encoding_pooled,
+        sampled_trajectories,
+        stop_bool,
     ):
         """Inference using Flow Matching approach.
 
@@ -400,6 +432,7 @@ class Decoder(nn.Module):
             neighbor_current_mask: [B, Pn] mask for invalid neighbors
             encoding_pooled: [B, D] pooled encoding
             sampled_trajectories: [B, P, (1 + T) * 4] sampled trajectories
+            stop_bool: [B, 9] bool predicted stop flags
 
         Returns:
             Dict containing prediction and turn_indicator_logit
@@ -413,6 +446,7 @@ class Decoder(nn.Module):
             self.dit,
             cross_c=encoding,
             neighbor_current_mask=neighbor_current_mask,
+            stop_bool=stop_bool,
         )
         x = euler_integration(func, x, NUM_STEP)
         # x = heun_integration(func, x, NUM_STEP)
@@ -436,6 +470,7 @@ class Decoder(nn.Module):
         neighbor_current_mask,
         encoding_pooled,
         sampled_trajectories,
+        stop_bool,
     ):
         """Inference using X-Start (DPM Solver) approach.
 
@@ -446,6 +481,7 @@ class Decoder(nn.Module):
             neighbor_current_mask: [B, Pn] mask for invalid neighbors
             encoding_pooled: [B, D] pooled encoding
             sampled_trajectories: [B, P, (1 + T) * 4] sampled trajectories
+            stop_bool: [B, 9] bool predicted stop flags
 
         Returns:
             Dict containing prediction and turn_indicator_logit
@@ -474,6 +510,7 @@ class Decoder(nn.Module):
                 "model_condition": {
                     "cross_c": encoding,
                     "neighbor_current_mask": neighbor_current_mask,
+                    "stop_bool": stop_bool,
                 },
                 "inputs": inputs,
                 "observation_normalizer": self._observation_normalizer,
@@ -492,6 +529,7 @@ class Decoder(nn.Module):
             model_kwargs={
                 "cross_c": encoding,
                 "neighbor_current_mask": neighbor_current_mask,
+                "stop_bool": stop_bool,
             },
             **model_wrapper_params,
         )
@@ -530,32 +568,45 @@ class Decoder(nn.Module):
         B = encoding.shape[0]
         P = 1 + self._predicted_neighbor_num
 
+        stop_logits = self.stop_predictor(encoding)  # (B, 9)
+        stop_pred = stop_logits > 0  # (B, 9) bool
+
         sampled_trajectories = inputs["sampled_trajectories"].reshape(
             B, P, (1 + self._future_len) * 4
         )
 
         if self._model_type == "flow_matching":
-            return self._inference_flow_matching(
-                encoding, inputs, current_states, neighbor_current_mask, encoding_pooled, sampled_trajectories
-            )
-        elif self._model_type == "x_start":
-            return self._inference_x_start(
+            result = self._inference_flow_matching(
                 encoding,
                 inputs,
                 current_states,
                 neighbor_current_mask,
                 encoding_pooled,
                 sampled_trajectories,
+                stop_pred,
+            )
+        elif self._model_type == "x_start":
+            result = self._inference_x_start(
+                encoding,
+                inputs,
+                current_states,
+                neighbor_current_mask,
+                encoding_pooled,
+                sampled_trajectories,
+                stop_pred,
             )
         else:
             raise NotImplementedError(f"Unknown model type {self._model_type}")
 
-    def forward(self, encoding, inputs):
+        result["stop_logits"] = stop_logits
+        return result
+
+    def forward(self, encoding, inputs):  # encoding has invalid tokens zero-filled
         """
         Diffusion decoder process.
 
         Args:
-            encoding: [B, N, D] encoded features
+            encoding: [B, N, D] encoded features (invalid tokens are zero-filled)
             inputs: Dict
                 {
                     ...

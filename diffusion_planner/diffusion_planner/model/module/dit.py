@@ -34,7 +34,7 @@ class DiTBlock(nn.Module):
             in_features=dim, hidden_features=mlp_hidden_dim, act_layer=approx_gelu, drop=0
         )
 
-    def forward(self, x, cross_c, y, attn_mask):
+    def forward(self, x, cross_c, y, attn_mask, cross_c_mask=None):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(
             y
         ).chunk(6, dim=2)
@@ -49,7 +49,7 @@ class DiTBlock(nn.Module):
         modulated_x = modulate(self.norm2(x), shift_mlp, scale_mlp)
         x = x + gate_mlp * self.mlp1(modulated_x)
 
-        x = x + self.cross_attn(self.norm3(x), cross_c, cross_c)[0]
+        x = x + self.cross_attn(self.norm3(x), cross_c, cross_c, key_padding_mask=cross_c_mask)[0]
         x = x + self.mlp2(self.norm4(x))
 
         return x
@@ -84,6 +84,9 @@ class FinalLayer(nn.Module):
         return x
 
 
+NUM_STOP_TOKENS = 9
+
+
 class DiT(nn.Module):
     def __init__(
         self,
@@ -113,17 +116,19 @@ class DiT(nn.Module):
             act_layer=nn.GELU,
             drop=0.0,
         )
+        self.stop_emb = nn.Linear(NUM_STOP_TOKENS, hidden_dim)
         self.blocks = nn.ModuleList(
             [DiTBlock(hidden_dim, heads, dropout, mlp_ratio) for i in range(depth)]
         )
         self.final_layer = FinalLayer(hidden_dim, output_dim)
 
-    def forward(self, x, t, cross_c, neighbor_current_mask):
+    def forward(self, x, t, cross_c, neighbor_current_mask, stop_bool=None):
         """
         Forward pass of DiT.
         x: (B, P, T, D)   -> Embedded out of DiT
         t: (B, P, T, 1)
         cross_c: (B, N, D)      -> Cross-Attention context
+        stop_bool: (B, NUM_STOP_TOKENS) bool, optional -> additive embedding on ego token
         """
         assert x.dim() == 4, f"{x.dim()=}"
         assert t.dim() == 4, f"{t.dim()=}"
@@ -146,11 +151,19 @@ class DiT(nn.Module):
         x_embedding = x_embedding[None, :, :].expand(B, -1, -1)  # (B, P, hidden_dim)
         x = x + x_embedding
 
+        if stop_bool is not None:
+            stop_delta = torch.zeros_like(x)
+            stop_delta[:, 0] = self.stop_emb(stop_bool.float())
+            x = x + stop_delta
+
         ego_mask = torch.zeros((B, 1), dtype=torch.bool, device=x.device)
         attn_mask = torch.cat([ego_mask, neighbor_current_mask], dim=1)
 
+        # Derive cross-attention mask from zero-filled invalid encoder tokens
+        cross_c_mask = cross_c.abs().sum(dim=-1) == 0  # (B, N)
+
         for block in self.blocks:
-            x = block(x, cross_c, t, attn_mask)
+            x = block(x, cross_c, t, attn_mask, cross_c_mask=cross_c_mask)
 
         x = self.final_layer(x, t) # (B, P, output_dim)
         x = x.reshape(B, P, T, D)

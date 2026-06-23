@@ -24,7 +24,7 @@ class Predictor:
         self.model.eval()
 
     @torch.no_grad()
-    def predict(self, npz_path: str | Path) -> np.ndarray:
+    def predict(self, npz_path: str | Path) -> dict[str, np.ndarray]:
         data = _load_npz_data(npz_path, self.device)
         data = self.model_args.observation_normalizer(data)
 
@@ -41,7 +41,10 @@ class Predictor:
         )
 
         _, outputs = self.model(data)
-        return outputs["prediction"][0].detach().cpu().numpy()
+        return {
+            "prediction": outputs["prediction"][0].detach().cpu().numpy(),
+            "stop_logits": outputs["stop_logits"][0].detach().cpu().numpy(),
+        }
 
 
 def _select_device(device_name: str) -> torch.device:
