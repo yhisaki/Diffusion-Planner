@@ -349,13 +349,29 @@ class BoolSequenceEncoder(nn.Module):
 
 
 class EgoVelocityEncoder(nn.Module):
-    def __init__(self, seq_len: int, hidden_dim: int):
+    def __init__(
+        self,
+        seq_len: int,
+        hidden_dim: int,
+        last_vx_dropout: float = 0.5,
+    ):
         super().__init__()
         self._hidden_dim = hidden_dim
+
         emb_dim = 64
         self.bool_encoder = BoolSequenceEncoder(seq_len, emb_dim, hidden_dim)
 
-    def forward(self, ego_velocity, ego_current_pose):
+        self.last_vx_encoder = nn.Sequential(
+            nn.Linear(1, hidden_dim),
+            nn.GELU(),
+            nn.LayerNorm(hidden_dim),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+
+        # Dropout is applied only to the additive last-vx branch.
+        self.last_vx_dropout = nn.Dropout(p=last_vx_dropout)
+
+    def forward(self, ego_velocity: torch.Tensor, ego_current_pose: torch.Tensor):
         """
         ego_velocity: (B, T, 2) - x, y velocities
         ego_current_pose: (B, 4) - current pose (x, y, cos, sin)
@@ -365,7 +381,13 @@ class EgoVelocityEncoder(nn.Module):
         vel_x = ego_velocity[:, :, 0]  # (B, T)
         vel_bool = vel_x.abs() > 1e-3  # (B, T)
 
-        encoding = self.bool_encoder(vel_bool)  # (B, hidden_dim)
+        bool_encoding = self.bool_encoder(vel_bool)  # (B, hidden_dim)
+
+        last_vx = ego_velocity[:, -1:, 0]  # (B, 1)
+        last_vx_encoding = self.last_vx_encoder(last_vx)  # (B, hidden_dim)
+        last_vx_encoding = self.last_vx_dropout(last_vx_encoding)
+
+        encoding = bool_encoding + last_vx_encoding  # (B, hidden_dim)
         encoding = encoding.unsqueeze(1)  # (B, 1, hidden_dim)
 
         pos = ego_current_pose.clone().unsqueeze(1)  # (B, 1, 4)
@@ -401,9 +423,9 @@ class NeighborEncoder(nn.Module):
             drop=0.0,
         )
 
-        self.blocks = nn.ModuleList(
-            [MixerBlock(tokens_mlp_dim, channels_mlp_dim, drop_path_rate) for i in range(depth)]
-        )
+        self.blocks = nn.ModuleList([
+            MixerBlock(tokens_mlp_dim, channels_mlp_dim, drop_path_rate) for i in range(depth)
+        ])
 
         self.norm = nn.LayerNorm(channels_mlp_dim)
         self.emb_project = Mlp(
@@ -520,9 +542,9 @@ class LaneEncoder(nn.Module):
             drop=0.0,
         )
 
-        self.blocks = nn.ModuleList(
-            [MixerBlock(tokens_mlp_dim, channels_mlp_dim, drop_path_rate) for i in range(depth)]
-        )
+        self.blocks = nn.ModuleList([
+            MixerBlock(tokens_mlp_dim, channels_mlp_dim, drop_path_rate) for i in range(depth)
+        ])
 
         self.norm = nn.LayerNorm(channels_mlp_dim)
         self.emb_project = Mlp(
@@ -544,7 +566,9 @@ class LaneEncoder(nn.Module):
 
         pos = x[:, :, int(self._lane_len / 2), :4].clone()  # x, y, x'-x, y'-y
         heading = torch.atan2(pos[..., 3], pos[..., 2])
-        pos = torch.stack([pos[..., 0], pos[..., 1], torch.cos(heading), torch.sin(heading)], dim=-1)
+        pos = torch.stack(
+            [pos[..., 0], pos[..., 1], torch.cos(heading), torch.sin(heading)], dim=-1
+        )
         pos = add_class_type(pos, self._class_type)
 
         B, P, V, _ = x.shape
@@ -615,9 +639,9 @@ class LineEncoder(nn.Module):
             drop=0.0,
         )
 
-        self.blocks = nn.ModuleList(
-            [MixerBlock(tokens_mlp_dim, channels_mlp_dim, drop_path_rate) for i in range(depth)]
-        )
+        self.blocks = nn.ModuleList([
+            MixerBlock(tokens_mlp_dim, channels_mlp_dim, drop_path_rate) for i in range(depth)
+        ])
 
         self.norm = nn.LayerNorm(channels_mlp_dim)
         self.emb_project = Mlp(
@@ -644,7 +668,9 @@ class LineEncoder(nn.Module):
 
         pos = x[:, :, int(self._line_len / 2), :4].clone()  # x, y, x'-x, y'-y
         heading = torch.atan2(pos[..., 3], pos[..., 2])
-        pos = torch.stack([pos[..., 0], pos[..., 1], torch.cos(heading), torch.sin(heading)], dim=-1)
+        pos = torch.stack(
+            [pos[..., 0], pos[..., 1], torch.cos(heading), torch.sin(heading)], dim=-1
+        )
         pos = add_class_type(pos, self._class_type)
 
         B, P, V, _ = x.shape
@@ -773,9 +799,9 @@ class FusionEncoder(nn.Module):
 
         dpr = drop_path_rate
 
-        self.blocks = nn.ModuleList(
-            [SelfAttentionBlock(hidden_dim, num_heads, dropout=dpr) for i in range(depth)]
-        )
+        self.blocks = nn.ModuleList([
+            SelfAttentionBlock(hidden_dim, num_heads, dropout=dpr) for i in range(depth)
+        ])
 
         self.norm = nn.LayerNorm(hidden_dim)
 
