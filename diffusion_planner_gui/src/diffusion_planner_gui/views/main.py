@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from io import BytesIO
+
 import numpy as np
 import streamlit as st
 
@@ -23,13 +25,27 @@ def _format_ego_state(state: np.ndarray) -> str:
     return "\n".join(f"{labels[i]}: {state[i]:.4f}" for i in range(len(state)))
 
 
+def _current_data(npz_path) -> tuple[dict[str, np.ndarray], bool]:
+    augmented = st.session_state.get("augmented_data")
+    if augmented is not None and st.session_state.get("augmented_path") == str(npz_path):
+        return augmented, True
+    return load_npz(npz_path), False
+
+
+def _npz_bytes(data: dict[str, np.ndarray]) -> bytes:
+    buffer = BytesIO()
+    np.savez(buffer, **data)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
 def render_main() -> None:
     npz_paths = st.session_state.npz_paths
     idx = st.session_state.current_index
     n_total = len(npz_paths)
     npz_path = npz_paths[idx]
 
-    data = load_npz(npz_path)
+    data, is_augmented = _current_data(npz_path)
 
     model_loaded = st.session_state.model_loaded
     view_range = 40
@@ -43,7 +59,8 @@ def render_main() -> None:
         predictor = _get_predictor(st.session_state.model_path, "auto")
         if predictor is not None:
             prediction = predictor.predict(
-                npz_path=npz_path,
+                npz_path=None if is_augmented else npz_path,
+                data=data if is_augmented else None,
                 noise_scale=st.session_state.noise_scale,
                 noise_seed=st.session_state.noise_seed,
             )
@@ -97,9 +114,11 @@ def render_main() -> None:
         )
 
         with open(str(npz_path), "rb") as f:
+            download_data = _npz_bytes(data) if is_augmented else f.read()
+            download_name = f"{npz_path.stem}_augmented.npz" if is_augmented else npz_path.name
             st.download_button(
                 "Download this NPZ",
-                f.read(),
-                file_name=npz_path.name,
+                download_data,
+                file_name=download_name,
                 mime="application/octet-stream",
             )

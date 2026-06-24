@@ -42,22 +42,21 @@ class StatePerturbation:
     """Scene-level ego-centric data augmentation.
 
     The raw dataset is already expressed in the current ego frame. This augmenter
-    samples a small virtual current ego pose in that frame, bends only the ego
-    history/future so they meet and leave that virtual pose smoothly, then
-    rewrites every geometric field into the new virtual ego frame.
+    samples a small virtual current ego pose in that frame, then rewrites every
+    geometric field into the new virtual ego frame.
     """
 
     def __init__(
         self,
         augment_prob: float = 0.5,
-        min_speed: float = 1.0,
+        min_speed: float = 0.0,
         min_length: float = 15.0,
         time_interval: float = 0.1,
         max_steering_rate: float = 0.5,
         min_linearization_speed: float = 1.0,
-        exact_position_gain: float = 1.0,
+        exact_position_gain: float = 2.5,
         exact_velocity_gain: float = 3.0,
-        lateral_offset_std: float = 1.5,
+        lateral_offset_std: float = 1.0,
         yaw_half_range: float = 0.2,
         default_wheel_base: float = 3.0,
         speed_scale_half_range: float = 0.2,
@@ -93,14 +92,14 @@ class StatePerturbation:
             return data
         if "ego_current_state" not in data:
             return data
-        if abs(float(data["ego_current_state"][4])) < self.config.min_speed:
-            return data
+        # if abs(float(data["ego_current_state"][4])) < self.config.min_speed:
+        #     return data
 
-        future_length = self._future_trajectory_length(data)
-        std_scale = min(1.0, future_length / self.config.min_length)
-        cfg = self.config
-        cfg.lateral_offset_std *= std_scale
-        cfg.yaw_half_range *= std_scale
+        # future_length = self._future_trajectory_length(data)
+        # std_scale = min(1.0, future_length / self.config.min_length)
+        # cfg = self.config
+        # cfg.lateral_offset_std *= std_scale
+        # cfg.yaw_half_range *= std_scale
 
         augmented = {
             key: np.array(value, copy=True) if isinstance(value, np.ndarray) else value
@@ -112,7 +111,6 @@ class StatePerturbation:
         self._scale_ego_past(augmented, perturbation.speed_scale)
         if include_aux:
             self._add_original_gt_in_augmented_frame(augmented, perturbation, source_data=data)
-        self._rollout_ego_future_with_dynamics(augmented, perturbation)
         self._transform_scene_to_new_ego_frame(augmented, perturbation)
         self._reset_ego_current_state(augmented, perturbation)
         return augmented
@@ -146,19 +144,14 @@ class StatePerturbation:
         x = 0.0
         # yaw and speed_scale use uniform distributions over [-half_range, half_range].
         # lateral_offset uses a normal distribution N(0, lateral_offset_std^2).
-        y = float(np.random.normal(0.0, cfg.lateral_offset_std))
-        theta = float(
-            np.random.uniform(
-                -cfg.yaw_half_range,
-                cfg.yaw_half_range,
-            )
-        )
+        # y = float(np.random.normal(0.0, cfg.lateral_offset_std))
+        y = float(np.random.uniform(-cfg.lateral_offset_std, cfg.lateral_offset_std))
+        theta = float(np.random.uniform(-cfg.yaw_half_range, cfg.yaw_half_range))
         speed_scale = max(
             0.0,
             float(
                 np.random.uniform(
-                    1.0 - cfg.speed_scale_half_range,
-                    1.0 + cfg.speed_scale_half_range,
+                    1.0 - cfg.speed_scale_half_range, 1.0 + cfg.speed_scale_half_range
                 )
             ),
         )

@@ -26,14 +26,15 @@ class Predictor:
     @torch.no_grad()
     def predict(
         self,
-        npz_path: str | Path,
+        npz_path: str | Path | None = None,
+        data: dict[str, np.ndarray] | None = None,
         noise_scale: float = 0.0,
         noise_seed: int = 0,
     ) -> np.ndarray:
-        data = _load_npz_data(npz_path, self.device)
-        data = self.model_args.observation_normalizer(data)
+        inputs = _prepare_input_data(npz_path=npz_path, data=data, device=self.device)
+        inputs = self.model_args.observation_normalizer(inputs)
 
-        batch_size = data["ego_current_state"].shape[0]
+        batch_size = inputs["ego_current_state"].shape[0]
         agent_count = 1 + int(self.model_args.predicted_neighbor_num)
         future_len = int(self.model_args.future_len)
         sampled_trajectories = torch.zeros(
@@ -56,9 +57,9 @@ class Predictor:
                 device=self.device,
                 generator=generator,
             )
-        data["sampled_trajectories"] = sampled_trajectories
+        inputs["sampled_trajectories"] = sampled_trajectories
 
-        _, outputs = self.model(data)
+        _, outputs = self.model(inputs)
         return outputs["prediction"][0].detach().cpu().numpy()
 
 
@@ -94,19 +95,31 @@ def _load_checkpoint(model_path: Path, model: Diffusion_Planner, device: torch.d
     model.load_state_dict(state_dict, strict=False)
 
 
-def _load_npz_data(npz_path: str | Path, device: torch.device) -> dict[str, torch.Tensor]:
-    with np.load(str(npz_path)) as loaded:
-        data: dict[str, torch.Tensor] = {}
-        for key, value in loaded.items():
-            if key in {"map_name", "token", "delay"}:
-                continue
-            data[key] = torch.as_tensor(np.expand_dims(value, axis=0), device=device)
+def _prepare_input_data(
+    npz_path: str | Path | None,
+    data: dict[str, np.ndarray] | None,
+    device: torch.device,
+) -> dict[str, torch.Tensor]:
+    if data is None:
+        if npz_path is None:
+            raise ValueError("Either npz_path or data must be provided.")
+        with np.load(str(npz_path)) as loaded:
+            source = {key: loaded[key] for key in loaded.files}
+    else:
+        source = data
 
-    if "goal_pose" in data:
-        data["goal_pose"] = heading_to_cos_sin(data["goal_pose"])
-    if "ego_agent_past" in data:
-        data["ego_agent_past"] = heading_to_cos_sin(data["ego_agent_past"])
-    if "delay" not in data:
-        data["delay"] = torch.zeros(1, dtype=torch.long, device=device)
+    tensor_data: dict[str, torch.Tensor] = {}
+    for key, value in source.items():
+        if key in {"map_name", "token", "delay"}:
+            continue
+        if not isinstance(value, np.ndarray) or value.dtype.kind in {"O", "U", "S"}:
+            continue
+        tensor_data[key] = torch.as_tensor(np.expand_dims(value, axis=0), device=device)
 
-    return data
+    if "goal_pose" in tensor_data:
+        tensor_data["goal_pose"] = heading_to_cos_sin(tensor_data["goal_pose"])
+    if "ego_agent_past" in tensor_data:
+        tensor_data["ego_agent_past"] = heading_to_cos_sin(tensor_data["ego_agent_past"])
+    tensor_data["delay"] = torch.zeros(1, dtype=torch.long, device=device)
+
+    return tensor_data

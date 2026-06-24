@@ -20,6 +20,9 @@ def init_session() -> None:
         "show_gt_footprint": False,
         "show_pred_footprint": False,
         "footprint_interval": 1,
+        "augmented_data": None,
+        "augmented_path": "",
+        "augmentation_error": None,
     }
     for key, val in defaults.items():
         if key not in st.session_state:

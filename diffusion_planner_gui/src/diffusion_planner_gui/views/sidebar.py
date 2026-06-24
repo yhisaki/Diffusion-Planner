@@ -5,9 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import streamlit as st
+from diffusion_planner.utils.data_augmentation import StatePerturbation
 
 from diffusion_planner_gui.inference import Predictor
-from diffusion_planner_gui.loader import resolve_data_path
+from diffusion_planner_gui.loader import load_npz, resolve_data_path
 
 
 @st.cache_resource
@@ -40,6 +41,7 @@ def render_sidebar() -> None:
             return
 
         _render_navigation()
+        _render_augmentation()
         _render_display()
         if st.session_state.model_loaded:
             _render_noise()
@@ -81,17 +83,25 @@ def _on_load() -> None:
     st.session_state.data_loaded = True
     st.session_state.model_loaded = model_loaded
     st.session_state.noise_seed = 0
+    _clear_augmentation()
 
 
 def _render_navigation() -> None:
     st.divider()
     st.header("Navigation")
 
-    st.slider("Sample", 0, max(1, len(st.session_state.npz_paths) - 1), key="current_index")
+    st.slider(
+        "Sample",
+        0,
+        max(1, len(st.session_state.npz_paths) - 1),
+        key="current_index",
+        on_change=_clear_augmentation,
+    )
 
     def _nav_callback(delta: int) -> None:
         n = len(st.session_state.npz_paths)
         st.session_state.current_index = max(0, min(n - 1, st.session_state.current_index + delta))
+        _clear_augmentation()
 
     cols = st.columns(10)
     labels_deltas = [
@@ -109,6 +119,57 @@ def _render_navigation() -> None:
     for col, (label, delta) in zip(cols, labels_deltas):
         with col:
             st.button(label, on_click=_nav_callback, args=(delta,), key=f"nav_{delta}")
+
+
+def _render_augmentation() -> None:
+    st.divider()
+    st.header("Data Augmentation")
+
+    if st.session_state.get("augmentation_error"):
+        st.error(st.session_state.augmentation_error)
+        st.session_state.augmentation_error = None
+
+    st.checkbox(
+        "State Perturbation",
+        key="state_perturbation_enabled",
+        on_change=_on_state_perturbation_toggle,
+    )
+    if st.session_state.get("augmented_data") is not None:
+        st.caption("Showing augmented data for the current sample.")
+
+
+def _on_state_perturbation_toggle() -> None:
+    if st.session_state.get("state_perturbation_enabled"):
+        _on_augment_current_sample()
+    else:
+        _clear_augmentation()
+
+
+def _on_augment_current_sample() -> None:
+    try:
+        npz_path = st.session_state.npz_paths[st.session_state.current_index]
+        data = load_npz(npz_path)
+        augmented = StatePerturbation(augment_prob=1.0).augment_with_aux(data)
+    except Exception as e:
+        st.session_state.augmentation_error = f"Failed to augment current sample: {e}"
+        _clear_augmentation()
+        return
+
+    if augmented is data:
+        st.session_state.augmentation_error = (
+            "Data augmentation was skipped by the augmenter conditions."
+        )
+        _clear_augmentation()
+        return
+
+    st.session_state.augmented_data = augmented
+    st.session_state.augmented_path = str(npz_path)
+
+
+def _clear_augmentation() -> None:
+    st.session_state.augmented_data = None
+    st.session_state.augmented_path = ""
+    st.session_state.state_perturbation_enabled = False
 
 
 def _render_display() -> None:
