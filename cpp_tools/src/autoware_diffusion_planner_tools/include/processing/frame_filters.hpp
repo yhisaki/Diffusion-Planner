@@ -276,14 +276,14 @@ struct OffLaneResult
 };
 
 inline OffLaneResult compute_offlane_score(
-  const std::vector<float> & ego_future, const std::vector<float> & lanes, int64_t time_stride)
+  const std::vector<float> & ego_future, const std::vector<float> & lanes, int64_t sample_stride)
 {
   using autoware::diffusion_planner::NUM_SEGMENTS_IN_LANE;
   using autoware::diffusion_planner::OUTPUT_T;
   using autoware::diffusion_planner::POINTS_PER_SEGMENT;
   using autoware::diffusion_planner::POSE_DIM;
   using autoware::diffusion_planner::SEGMENT_POINT_DIM;
-  if (time_stride < 1) time_stride = 1;
+  if (sample_stride < 1) sample_stride = 1;
 
   // Valid lane centerline points (xy), matching collect_centerline_points().
   std::vector<std::array<float, 2>> pts;
@@ -300,7 +300,7 @@ inline OffLaneResult compute_offlane_score(
 
   double sum = 0.0;
   int64_t count = 0;
-  for (int64_t t = 0; t < OUTPUT_T; t += time_stride) {
+  for (int64_t t = 0; t < OUTPUT_T; t += sample_stride) {
     const float ex = ego_future[t * POSE_DIM + 0];
     const float ey = ego_future[t * POSE_DIM + 1];
     float best_sq = 1e30f;
@@ -331,17 +331,19 @@ inline CollisionResult check_collision(
   const std::vector<float> & ego_future, const std::vector<float> & ego_shape,
   const std::vector<float> & static_objects, const std::vector<float> & neighbor_future,
   const std::vector<float> & neighbor_past, const std::vector<float> & line_strings,
-  float static_object_margin, float neighbor_margin, float road_border_margin, int64_t time_stride)
+  float static_object_margin, float neighbor_margin, float road_border_margin,
+  int64_t sample_stride)
 {
   CollisionResult result;
-  if (time_stride < 1) time_stride = 1;
-  const std::vector<Corners> ego = compute_ego_corners(ego_future, ego_shape, time_stride);
+  if (sample_stride < 1) sample_stride = 1;
+  const std::vector<Corners> ego = compute_ego_corners(ego_future, ego_shape, sample_stride);
   if (ego.empty()) return result;
 
   if (check_static_object_collision(ego, static_objects, static_object_margin)) {
     result.reasons.emplace_back("static_object");
   }
-  if (check_neighbor_collision(ego, neighbor_future, neighbor_past, neighbor_margin, time_stride)) {
+  if (
+    check_neighbor_collision(ego, neighbor_future, neighbor_past, neighbor_margin, sample_stride)) {
     result.reasons.emplace_back("neighbor");
   }
   if (check_road_border_collision(ego, line_strings, road_border_margin)) {
