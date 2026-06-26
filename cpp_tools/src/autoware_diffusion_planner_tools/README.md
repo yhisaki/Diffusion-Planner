@@ -111,15 +111,19 @@ Both converter commands accept these options:
 | `--min_frames N` | Minimum assembled frames required to accept a sequence | `1700` |
 | `--min_distance M` | Minimum traveled ego distance in meters | `50.0` |
 | `--future_distance_horizon_m M` | Distance horizon for `ego_agent_future`; shorter available futures reduce per-frame interval | `80.0` |
+| `--green_light_stop_line_distance_m M` | Skip green-light no-start frames when the ego front bumper is within this stop-line distance; `0` disables | `5.0` |
+| `--green_light_no_start_duration_s S` | Future duration used to detect no-start behavior at green lights; `0` disables | `0.3` |
+| `--stopped_future_drop_probability P` | Deterministic drop probability for fully stopped `ego_velocity_future` frames | `0.9` |
 | `--search_nearest_route 0/1` | Use the latest route at or before each frame timestamp | `1` |
-| `--convert_yellow 0/1` | Keep yellow-light frames instead of skipping them | `0` |
-| `--convert_red 0/1` | Keep red-light frames instead of skipping them | `0` |
+| `--convert_yellow 0/1` | Deprecated compatibility option; legacy red/yellow stopped-frame skip is disabled | `0` |
+| `--convert_red 0/1` | Deprecated compatibility option; legacy red/yellow stopped-frame skip is disabled | `0` |
 | `--interpolation 0/1` | Use timestamp-based interpolation for ego trajectories | `1` |
 | `--ego_wheel_base M` | Ego vehicle wheel base in meters | `-1.0` |
 | `--ego_length M` | Ego vehicle length in meters | `-1.0` |
 | `--ego_width M` | Ego vehicle width in meters | `-1.0` |
 | `--static_object_margin M` | Static-object collision filter margin | `0.0` |
 | `--neighbor_margin M` | Neighbor-agent collision filter margin | `0.0` |
+| `--disable_neighbor_collision 0/1` | Disable neighbor-agent collision filtering | `0` |
 | `--road_border_margin M` | Road-border collision filter margin | `0.0` |
 | `--collision_time_stride N` | Sample stride for trajectory collision filters | `5` |
 | `--offlane_max_score M` | Off-lane filter maximum average distance from lane centerlines | `6.0` |

@@ -25,6 +25,7 @@ namespace
 {
 
 constexpr double kPi = 3.14159265358979323846;
+constexpr double kStoppedVelocityThresholdMps = 0.1;
 
 struct EgoPathPoint
 {
@@ -118,7 +119,14 @@ std::optional<EgoDistanceSequenceResult> create_ego_distance_sequence(
       const EgoPathPoint & prev = path.back();
       const double dx = point.x - prev.x;
       const double dy = point.y - prev.y;
-      point.distance = prev.distance + std::sqrt(dx * dx + dy * dy);
+      const bool prev_stopped = std::abs(data_list[j - 1].kinematic_state.twist.twist.linear.x) <
+                                kStoppedVelocityThresholdMps;
+      const bool current_stopped =
+        std::abs(data_list[j].kinematic_state.twist.twist.linear.x) < kStoppedVelocityThresholdMps;
+      // Do not spend distance samples on localization/odometry jitter while stopped.
+      const double segment_distance =
+        (prev_stopped && current_stopped) ? 0.0 : std::sqrt(dx * dx + dy * dy);
+      point.distance = prev.distance + segment_distance;
     }
     path.push_back(point);
     if (point.distance >= distance_horizon_m) {

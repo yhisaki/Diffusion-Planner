@@ -332,7 +332,7 @@ inline CollisionResult check_collision(
   const std::vector<float> & static_objects, const std::vector<float> & neighbor_future,
   const std::vector<float> & neighbor_past, const std::vector<float> & line_strings,
   float static_object_margin, float neighbor_margin, float road_border_margin,
-  int64_t sample_stride)
+  bool disable_neighbor_collision, int64_t sample_stride)
 {
   CollisionResult result;
   if (sample_stride < 1) sample_stride = 1;
@@ -343,6 +343,7 @@ inline CollisionResult check_collision(
     result.reasons.emplace_back("static_object");
   }
   if (
+    !disable_neighbor_collision &&
     check_neighbor_collision(ego, neighbor_future, neighbor_past, neighbor_margin, sample_stride)) {
     result.reasons.emplace_back("neighbor");
   }

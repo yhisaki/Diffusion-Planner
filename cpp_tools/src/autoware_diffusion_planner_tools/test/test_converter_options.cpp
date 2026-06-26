@@ -29,6 +29,10 @@ static ConverterOptions make_default_opts()
   o.interpolation = 1;
   o.use_interpolation = true;
   o.min_distance = 50.0;
+  o.future_distance_horizon_m = 80.0;
+  o.green_light_stop_line_distance_m = 5.0;
+  o.green_light_no_start_duration_s = 0.3;
+  o.stopped_future_drop_probability = 0.9;
   o.ego_wheel_base = 2.75f;
   o.ego_length = 4.34f;
   o.ego_width = 1.70f;
@@ -53,6 +57,10 @@ TEST(DefaultConverterOptionsTest, UsesSharedDefaults)
   EXPECT_EQ(opts.convert_red, 0);
   EXPECT_EQ(opts.interpolation, 1);
   EXPECT_DOUBLE_EQ(opts.min_distance, 50.0);
+  EXPECT_DOUBLE_EQ(opts.future_distance_horizon_m, 80.0);
+  EXPECT_DOUBLE_EQ(opts.green_light_stop_line_distance_m, 5.0);
+  EXPECT_DOUBLE_EQ(opts.green_light_no_start_duration_s, 0.3);
+  EXPECT_DOUBLE_EQ(opts.stopped_future_drop_probability, 0.9);
   EXPECT_FLOAT_EQ(opts.ego_wheel_base, -1.0f);
   EXPECT_FLOAT_EQ(opts.ego_length, -1.0f);
   EXPECT_FLOAT_EQ(opts.ego_width, -1.0f);

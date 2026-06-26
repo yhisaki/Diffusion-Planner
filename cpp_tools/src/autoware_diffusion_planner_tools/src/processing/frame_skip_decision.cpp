@@ -39,8 +39,6 @@ SkippingInfo decide_frame_skip(
   const std::vector<float> & line_strings, const std::vector<float> & lanes,
   const FrameFilterParams & filter_params)
 {
-  using autoware::diffusion_planner::INPUT_T;
-
   if (inputs.max_msg_age_ns > kStaleThresholdNs) {
     return SkippingInfo::stale_data(inputs.max_msg_age_ns);
   }
@@ -49,17 +47,12 @@ SkippingInfo decide_frame_skip(
     return SkippingInfo::invalid_covariance(inputs.cov_xx, inputs.cov_yy);
   }
 
-  // Red/yellow-light run. With distance-sampled ego futures, adjacent future points no longer
-  // encode a 0.1 s speed profile, so the older position-derived acceleration trigger is not
-  // valid here. Keep only the stopped/forward geometric gate.
-  if (inputs.is_red_or_yellow) {
-    if (inputs.is_stop && inputs.is_future_forward) {
-      return SkippingInfo::red_or_yellow_light();
-    }
+  if (inputs.route_has_red_light && inputs.max_future_longitudinal_acceleration > 0.0) {
+    return SkippingInfo::accelerating_at_traffic_light();
   }
 
-  if (inputs.stopping_count > (INPUT_T + 5) && inputs.is_red_or_yellow) {
-    return SkippingInfo::stopped_at_traffic_light();
+  if (inputs.green_light_no_start) {
+    return SkippingInfo::green_light_no_start();
   }
 
   if (inputs.no_future_progress_x_step > kStuckThresholdTicks) {
@@ -71,7 +64,8 @@ SkippingInfo decide_frame_skip(
     const frame_filters::CollisionResult collision = frame_filters::check_collision(
       ego_future, ego_shape, static_objects, neighbor_future, neighbor_past, line_strings,
       filter_params.static_object_margin, filter_params.neighbor_margin,
-      filter_params.road_border_margin, filter_params.collision_time_stride);
+      filter_params.road_border_margin, filter_params.disable_neighbor_collision,
+      filter_params.collision_time_stride);
     collision.collided()) {
     return SkippingInfo::collision(collision.reasons);
   }

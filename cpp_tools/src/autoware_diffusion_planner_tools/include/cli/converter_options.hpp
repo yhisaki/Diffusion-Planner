@@ -35,6 +35,9 @@ struct ConverterOptions
   int64_t interpolation;
   double min_distance;
   double future_distance_horizon_m;
+  double green_light_stop_line_distance_m;
+  double green_light_no_start_duration_s;
+  double stopped_future_drop_probability;
   float ego_wheel_base;
   float ego_length;
   float ego_width;
@@ -47,6 +50,7 @@ struct ConverterOptions
   float static_object_margin;
   float neighbor_margin;
   float road_border_margin;
+  bool disable_neighbor_collision;
   int64_t collision_time_stride;
 
   // In-lanelet filter (ported from filter_in_lanelet_npz.py), always applied.

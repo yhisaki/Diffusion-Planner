@@ -28,11 +28,14 @@ namespace frame_processor
 // has no side effects and is straightforwardly unit-testable.
 struct FrameSkipInputs
 {
-  int64_t max_msg_age_ns;             // max staleness across required topics at this tick
-  double cov_xx;                      // kinematic_state.pose.covariance[0]
-  double cov_yy;                      // kinematic_state.pose.covariance[7]
-  bool is_stop;                       // linear.x < 0.1
-  bool is_red_or_yellow;              // next route segment has red/yellow light
+  int64_t max_msg_age_ns;    // max staleness across required topics at this tick
+  double cov_xx;             // kinematic_state.pose.covariance[0]
+  double cov_yy;             // kinematic_state.pose.covariance[7]
+  bool is_stop;              // linear.x < 0.1
+  bool is_red_or_yellow;     // Deprecated: traffic-light skips are disabled.
+  bool route_has_red_light;  // route tensor contains at least one red-light point
+  double max_future_longitudinal_acceleration;  // max future ego acceleration x [m/s^2]
+  bool green_light_no_start;          // green route, near stop line, no front car, no start
   bool is_future_forward;             // GT future mileage > 1.0 m
   int64_t stopping_count;             // consecutive ticks ego has been stopped
   int64_t no_future_progress_x_step;  // no_future_progress_count * step (scaled ticks)
@@ -45,6 +48,7 @@ struct FrameFilterParams
   float static_object_margin;
   float neighbor_margin;
   float road_border_margin;
+  bool disable_neighbor_collision;
   int64_t collision_time_stride;  // Sample stride over distance-sampled ego future points.
   float offlane_max_score;
   int64_t offlane_time_stride;  // Sample stride over distance-sampled ego future points.

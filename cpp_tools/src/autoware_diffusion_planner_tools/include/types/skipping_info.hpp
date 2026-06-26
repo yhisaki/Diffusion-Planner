@@ -90,10 +90,12 @@ enum class SkippingLabel {
 
   // NOTE: append new labels below to keep the integer values of the labels above stable
   // (they are written verbatim into the per-frame JSON and read back by analysis scripts).
-  AcceleratingAtTrafficLight,  // Accelerating into a red/yellow light while NOT fully stopped
-                               // (linear.x >= 0.1). Complements RedOrYellowLight, which only
-                               // covers the fully-stopped case; counted separately so the
-                               // extra coverage of this trigger is measurable.
+  AcceleratingAtTrafficLight,  // Current/future ego acceleration is positive while route contains
+                               // a red traffic light.
+  GreenLightNoStart,  // Ego is near a green-light stop line with no front vehicle but does not
+                      // start within the configured future duration.
+  StoppedFutureDownsampled,  // ego_velocity_future is fully stopped and selected by deterministic
+                             // probability downsampling.
 };
 
 // Structure to hold detailed skipping information
@@ -168,9 +170,23 @@ struct SkippingInfo
   {
     return {
       SkippingLabel::AcceleratingAtTrafficLight,
-      "Accelerating into red/yellow light while moving (linear.x >= 0.1)",
+      "Positive current/future acceleration while route contains a red light",
       {},
       {}};
+  }
+
+  static SkippingInfo green_light_no_start()
+  {
+    return {
+      SkippingLabel::GreenLightNoStart,
+      "No start near green-light stop line with no front vehicle",
+      {},
+      {}};
+  }
+
+  static SkippingInfo stopped_future_downsampled()
+  {
+    return {SkippingLabel::StoppedFutureDownsampled, "Stopped future downsampled", {}, {}};
   }
 
   // reasons: any of "static_object", "neighbor", "road_border"

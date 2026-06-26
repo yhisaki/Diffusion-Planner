@@ -208,6 +208,6 @@ TEST(CheckCollisionTest, NoObjectsNoCollision)
 
   const CollisionResult r = check_collision(
     ego_future, ego_shape, static_objects, neighbor_future, neighbor_past, line_strings, 0.0f, 0.0f,
-    0.0f, 5);
+    0.0f, false, 5);
   EXPECT_FALSE(r.collided());
 }
