@@ -55,10 +55,11 @@ def render_main() -> None:
     )
 
     prediction = None
+    ego_velocity_prediction = None
     if model_loaded:
         predictor = _get_predictor(st.session_state.model_path, "auto")
         if predictor is not None:
-            prediction = predictor.predict(
+            prediction, ego_velocity_prediction = predictor.predict_with_velocity(
                 npz_path=None if is_augmented else npz_path,
                 data=data if is_augmented else None,
                 noise_scale=st.session_state.noise_scale,
@@ -91,7 +92,7 @@ def render_main() -> None:
     with col4:
         st.plotly_chart(plot_tsin(data, prediction), width="stretch")
 
-    st.plotly_chart(plot_tv(data, prediction), width="stretch")
+    st.plotly_chart(plot_tv(data, prediction, ego_velocity_prediction), width="stretch")
 
     with st.sidebar:
         info = f"Sample {idx + 1} / {n_total} — {npz_path.name}"

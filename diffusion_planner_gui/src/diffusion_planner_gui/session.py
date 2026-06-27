@@ -16,7 +16,7 @@ def init_session() -> None:
         "npz_paths": [],
         "current_index": 0,
         "noise_seed": 0,
-        "noise_scale": 0.0,
+        "noise_scale": 1.0,
         "show_gt_footprint": False,
         "show_pred_footprint": False,
         "footprint_interval": 1,

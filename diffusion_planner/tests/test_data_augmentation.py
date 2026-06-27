@@ -1,5 +1,5 @@
 import numpy as np
-from diffusion_planner.utils.data_augmentation import EgoPerturbation, StatePerturbation
+from diffusion_planner.utils.data_augmentation import AugumentedEgoPosition, StatePerturbation
 
 
 def _make_data() -> dict[str, np.ndarray]:
@@ -70,7 +70,7 @@ def test_augment_with_aux_records_original_gt_in_augmented_frame():
         yaw_half_range=0.0,
     )
 
-    result = aug.augment_with_aux(data)
+    result = aug(data)
 
     assert "original_ego_agent_future_in_augmented_frame" in result
     assert "augmentation_perturbation" in result
@@ -90,9 +90,9 @@ def test_configurable_perturbation_half_range_is_used():
         speed_scale_half_range=0.0,
     )
 
-    perturbation = aug._augment_ego_current(current_state)
+    perturbation = aug._get_augment_ego_position(current_state)
 
-    assert perturbation == EgoPerturbation(x=0.0, y=0.0, yaw=0.0, speed=5.0)
+    assert perturbation == AugumentedEgoPosition(x=0.0, y=0.0, yaw=0.0, speed=5.0)
 
 
 def test_speed_perturbation_changes_ego_current_state():

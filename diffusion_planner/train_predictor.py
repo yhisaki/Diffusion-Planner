@@ -89,13 +89,14 @@ def get_args():
     )
     parser.add_argument("--use_turn_indicators", type=boolean, default=True)
 
-    parser.add_argument("--coeff_pos_ego", type=float, default=1.0)
-    parser.add_argument("--coeff_pos_neighbor", type=float, default=1.0)
+    parser.add_argument("--coeff_pos_ego", type=float, default=10.0)
+    parser.add_argument("--coeff_pos_neighbor", type=float, default=10.0)
     parser.add_argument("--coeff_heading_ego", type=float, default=1.0)
     parser.add_argument("--coeff_heading_neighbor", type=float, default=1.0)
 
     parser.add_argument("--alpha_planning_loss", type=float, default=1.0)
     parser.add_argument("--alpha_neighbor_loss", type=float, default=0.1)
+    parser.add_argument("--alpha_speed_loss", type=float, default=0.1)
 
     parser.add_argument("--device", type=str, help="run on which device", default="cuda")
 
@@ -105,6 +106,7 @@ def get_args():
     parser.add_argument("--encoder_mixer_depth", type=int, default=3)
     parser.add_argument("--encoder_fusion_depth", type=int, default=3)
     parser.add_argument("--decoder_depth", type=int, help="number of decoding layers", default=3)
+    parser.add_argument("--speed_predictor_depth", type=int, default=3)
     parser.add_argument("--num_heads", type=int, help="number of multi-head", default=8)
     parser.add_argument("--hidden_dim", type=int, help="hidden dimension", default=256)
     parser.add_argument("--predicted_neighbor_num", type=int, default=MAX_NUM_NEIGHBORS)
@@ -211,7 +213,7 @@ def model_training(args):
     train_epochs = args.train_epochs
     batch_size = args.batch_size
 
-    aug = StatePerturbation(augment_prob=args.augment_prob)
+    aug = StatePerturbation(path_augment_prob=args.augment_prob, velocity_augment_prob=1.0)
 
     # prepare dataset
     train_set = DiffusionPlannerData(args.train_set_list, data_augmentation=aug)

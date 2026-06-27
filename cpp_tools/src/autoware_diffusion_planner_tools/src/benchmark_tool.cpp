@@ -112,7 +112,7 @@ preprocess::InputDataMap generate_random_inputs(std::mt19937 & gen)
 
   preprocess::InputDataMap input;
   input["sampled_trajectories"] = make_random(SAMPLED_TRAJECTORIES_SHAPE);
-  input["ego_agent_past"] = make_random(EGO_HISTORY_SHAPE);
+  input["ego_velocity_past"] = make_random(EGO_VELOCITY_SHAPE);
   input["ego_current_state"] = make_random(EGO_CURRENT_STATE_SHAPE);
   input["neighbor_agents_past"] = make_random(NEIGHBOR_SHAPE);
   input["static_objects"] = make_random(STATIC_OBJECTS_SHAPE);

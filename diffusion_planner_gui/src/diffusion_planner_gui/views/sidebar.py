@@ -95,13 +95,13 @@ def _render_navigation() -> None:
         0,
         max(1, len(st.session_state.npz_paths) - 1),
         key="current_index",
-        on_change=_clear_augmentation,
+        on_change=_on_frame_change,
     )
 
     def _nav_callback(delta: int) -> None:
         n = len(st.session_state.npz_paths)
         st.session_state.current_index = max(0, min(n - 1, st.session_state.current_index + delta))
-        _clear_augmentation()
+        _on_frame_change()
 
     cols = st.columns(10)
     labels_deltas = [
@@ -140,35 +140,49 @@ def _render_augmentation() -> None:
 
 def _on_state_perturbation_toggle() -> None:
     if st.session_state.get("state_perturbation_enabled"):
-        _on_augment_current_sample()
+        if not _on_augment_current_sample():
+            _clear_augmentation()
     else:
         _clear_augmentation()
 
 
-def _on_augment_current_sample() -> None:
+def _on_frame_change() -> None:
+    _invalidate_augmented_data()
+    if st.session_state.get("state_perturbation_enabled"):
+        _on_augment_current_sample()
+
+
+def _on_augment_current_sample() -> bool:
     try:
         npz_path = st.session_state.npz_paths[st.session_state.current_index]
         data = load_npz(npz_path)
-        augmented = StatePerturbation(augment_prob=1.0).augment_with_aux(data)
+        augmented = StatePerturbation(path_augment_prob=1.0, velocity_augment_prob=1.0).augment(
+            data
+        )
     except Exception as e:
         st.session_state.augmentation_error = f"Failed to augment current sample: {e}"
-        _clear_augmentation()
-        return
+        _invalidate_augmented_data()
+        return False
 
     if augmented is data:
         st.session_state.augmentation_error = (
             "Data augmentation was skipped by the augmenter conditions."
         )
-        _clear_augmentation()
-        return
+        _invalidate_augmented_data()
+        return False
 
     st.session_state.augmented_data = augmented
     st.session_state.augmented_path = str(npz_path)
+    return True
+
+
+def _invalidate_augmented_data() -> None:
+    st.session_state.augmented_data = None
+    st.session_state.augmented_path = ""
 
 
 def _clear_augmentation() -> None:
-    st.session_state.augmented_data = None
-    st.session_state.augmented_path = ""
+    _invalidate_augmented_data()
     st.session_state.state_perturbation_enabled = False
 
 

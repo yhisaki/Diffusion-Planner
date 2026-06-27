@@ -360,7 +360,11 @@ def plot_tsin(data: dict[str, np.ndarray], prediction: np.ndarray | None = None)
 # ---------------------------------------------------------------------------
 
 
-def plot_tv(data: dict[str, np.ndarray], prediction: np.ndarray | None = None) -> go.Figure:
+def plot_tv(
+    data: dict[str, np.ndarray],
+    prediction: np.ndarray | None = None,
+    ego_velocity_prediction: np.ndarray | None = None,
+) -> go.Figure:
     """Plot ego speed over time (past and future).
 
     Uses ``ego_velocity_past`` / ``ego_velocity_future`` if available;
@@ -369,6 +373,8 @@ def plot_tv(data: dict[str, np.ndarray], prediction: np.ndarray | None = None) -
     Args:
         data: NPZ data dict.
         prediction: Optional model output.
+        ego_velocity_prediction: Optional ego future velocity prediction, shape ``(T,)``
+            or ``(T, 1)``.
 
     Returns:
         Plotly Figure with past speed (orange) and future speed (black) traces.
@@ -392,12 +398,15 @@ def plot_tv(data: dict[str, np.ndarray], prediction: np.ndarray | None = None) -
         has_data = True
 
     ego_pred = _extract_ego_prediction(prediction)
+    pred_speed = None
+    if ego_velocity_prediction is not None:
+        pred_speed = np.asarray(ego_velocity_prediction).reshape(-1)
 
     if "ego_velocity_future" in data or "ego_agent_future" in data:
         fr = future_speeds(data)
         if fr is not None:
             t, speeds = fr
-            gt_opacity = 0.35 if ego_pred is not None else 1.0
+            gt_opacity = 0.35 if ego_pred is not None or pred_speed is not None else 1.0
             fig.add_trace(
                 go.Scatter(
                     x=t,
@@ -410,6 +419,11 @@ def plot_tv(data: dict[str, np.ndarray], prediction: np.ndarray | None = None) -
                 )
             )
             has_data = True
+
+    if pred_speed is not None and pred_speed.size > 0:
+        pred_t = np.arange(1, pred_speed.size + 1)
+        _add_pred_trace(fig, pred_t, pred_speed, "Pred speed")
+        has_data = True
 
     title = "V"
     if not has_data:

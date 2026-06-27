@@ -28,9 +28,25 @@ class Predictor:
         self,
         npz_path: str | Path | None = None,
         data: dict[str, np.ndarray] | None = None,
-        noise_scale: float = 0.0,
+        noise_scale: float = 1.0,
         noise_seed: int = 0,
     ) -> np.ndarray:
+        prediction, _ = self.predict_with_velocity(
+            npz_path=npz_path,
+            data=data,
+            noise_scale=noise_scale,
+            noise_seed=noise_seed,
+        )
+        return prediction
+
+    @torch.no_grad()
+    def predict_with_velocity(
+        self,
+        npz_path: str | Path | None = None,
+        data: dict[str, np.ndarray] | None = None,
+        noise_scale: float = 1.0,
+        noise_seed: int = 0,
+    ) -> tuple[np.ndarray, np.ndarray | None]:
         inputs = _prepare_input_data(npz_path=npz_path, data=data, device=self.device)
         inputs = self.model_args.observation_normalizer(inputs)
 
@@ -60,7 +76,11 @@ class Predictor:
         inputs["sampled_trajectories"] = sampled_trajectories
 
         _, outputs = self.model(inputs)
-        return outputs["prediction"][0].detach().cpu().numpy()
+        prediction = outputs["prediction"][0].detach().cpu().numpy()
+        velocity = outputs.get("ego_velocity_future_prediction")
+        if velocity is not None:
+            velocity = velocity[0].detach().cpu().numpy()
+        return prediction, velocity
 
 
 def _select_device(device_name: str) -> torch.device:

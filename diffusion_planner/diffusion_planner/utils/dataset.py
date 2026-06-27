@@ -18,5 +18,5 @@ class DiffusionPlannerData(Dataset):
         data = np.load(self.data_list[idx], allow_pickle=True)
         data = dict(data)  # npz to dict
         if self.data_augmentation is not None:
-            data = self.data_augmentation(data)
+            data = self.data_augmentation.augment(data)
         return data

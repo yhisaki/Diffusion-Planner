@@ -77,6 +77,7 @@ def train_epoch(
             loss["loss"] = (
                 args.alpha_neighbor_loss * loss["neighbor_prediction_loss"]
                 + args.alpha_planning_loss * loss["ego_planning_loss"]
+                + args.alpha_speed_loss * loss["ego_velocity_future_loss"]
                 + loss["turn_indicator_loss"]
             )
 
@@ -117,6 +118,9 @@ def train_epoch(
             avg_turn_indicator = sum(l["turn_indicator_loss"].item() for l in recent_losses) / len(
                 recent_losses
             )
+            avg_speed = sum(l["ego_velocity_future_loss"].item() for l in recent_losses) / len(
+                recent_losses
+            )
             lr = optimizer.param_groups[0]["lr"]
             print(
                 f"  Batch {batch_idx + 1}/{len(data_loader)} | "
@@ -126,6 +130,7 @@ def train_epoch(
                 f"Neighbor Pos: {avg_neighbor_pos:.4f} | "
                 f"Neighbor Heading: {avg_neighbor_heading:.4f} | "
                 f"Turn: {avg_turn_indicator:.4f} | "
+                f"Speed: {avg_speed:.4f} | "
                 f"LR: {lr:.6f} | "
                 f"{log_interval} batches: {elapsed_sec:.2f}s"
             )

@@ -8,18 +8,17 @@ from timm.layers import Mlp
 from diffusion_planner.dimensions import *
 from diffusion_planner.model.module.mixer import MixerBlock
 
-CLASS_TYPE_EGO_VELOCITY = 0
-CLASS_TYPE_EGO_DISPLACEMENT = 1
-CLASS_TYPE_NEIGHBOR = 2
-CLASS_TYPE_STATIC = 3
-CLASS_TYPE_LANE = 4
-CLASS_TYPE_ROUTE = 5
-CLASS_TYPE_POLYGON = 6
-CLASS_TYPE_LINE_STRING = 7
-CLASS_TYPE_GOAL_POSE = 8
-CLASS_TYPE_EGO_SHAPE = 9
-CLASS_TYPE_TURN_INDICATOR = 10
-CLASS_TYPE_NUM = 11
+CLASS_TYPE_EGO_VELOCITY_PAST = 0
+CLASS_TYPE_NEIGHBOR = 1
+CLASS_TYPE_STATIC = 2
+CLASS_TYPE_LANE = 3
+CLASS_TYPE_ROUTE = 4
+CLASS_TYPE_POLYGON = 5
+CLASS_TYPE_LINE_STRING = 6
+CLASS_TYPE_GOAL_POSE = 7
+CLASS_TYPE_EGO_SHAPE = 8
+CLASS_TYPE_TURN_INDICATOR = 9
+CLASS_TYPE_NUM = 10
 
 EncoderOutput: TypeAlias = tuple[torch.Tensor, torch.Tensor, torch.Tensor]
 
@@ -62,8 +61,7 @@ class Encoder(nn.Module):
         self.use_turn_indicators = config.use_turn_indicators
 
         self.token_num = (
-            1  # Ego velocity token
-            + 1  # Ego displacement token
+            1  # Ego velocity/past token
             + config.agent_num
             + config.static_objects_num
             + config.lane_num
@@ -75,10 +73,7 @@ class Encoder(nn.Module):
             + 1  # Turn indicator token
         )
 
-        self.ego_velocity_encoder = EgoVelocityEncoder(
-            hidden_dim=config.hidden_dim,
-        )
-        self.ego_displacement_encoder = EgoDisplacementEncoder(
+        self.ego_velocity_past_encoder = EgoVelocityPastEncoder(
             time_len=config.time_len,
             hidden_dim=config.hidden_dim,
         )
@@ -210,9 +205,9 @@ class Encoder(nn.Module):
         # ego shape
         ego_shape = inputs["ego_shape"]  # (B, D=3)
 
-        # ego velocity and displacement
-        ego_agent_past = inputs["ego_agent_past"]  # (B, T+1, 4) x, y, cos, sin
-        ego_current_speed = inputs["ego_current_state"][:, 4:5]  # (B, 1)
+        # ego past velocity
+        ego_velocity_past = inputs["ego_velocity_past"]  # (B, T, 2) vx, vy
+        ego_current_pose = inputs["ego_current_state"][:, :4]  # (B, 4) x, y, cos, sin
 
         # turn indicator
         turn_indicator = inputs["turn_indicators"][:, :-1]  # (B, T)
@@ -222,11 +217,8 @@ class Encoder(nn.Module):
 
         B = neighbors.shape[0]
 
-        encoding_ego_velocity, ego_velocity_mask, ego_velocity_pos = self.ego_velocity_encoder(
-            ego_current_speed
-        )
-        encoding_ego_displacement, ego_displacement_mask, ego_displacement_pos = (
-            self.ego_displacement_encoder(ego_agent_past)
+        encoding_ego_velocity_past, ego_velocity_past_mask, ego_velocity_past_pos = (
+            self.ego_velocity_past_encoder(ego_velocity_past, ego_current_pose)
         )
 
         encoding_neighbors, neighbors_mask, neighbor_pos = self.neighbor_encoder(neighbors)
@@ -249,8 +241,7 @@ class Encoder(nn.Module):
         )
         encoding_input = torch.cat(
             [
-                encoding_ego_velocity,
-                encoding_ego_displacement,
+                encoding_ego_velocity_past,
                 encoding_neighbors,
                 encoding_static,
                 encoding_lanes,
@@ -267,8 +258,7 @@ class Encoder(nn.Module):
         # All masks use PyTorch attention-mask polarity: True means invalid/padded.
         encoding_mask = torch.cat(
             [
-                ego_velocity_mask,
-                ego_displacement_mask,
+                ego_velocity_past_mask,
                 neighbors_mask,
                 static_mask,
                 lanes_mask,
@@ -286,8 +276,7 @@ class Encoder(nn.Module):
         # Add geometry/type positional embedding only to valid tokens.
         pose_type_input = torch.cat(
             [
-                ego_velocity_pos,
-                ego_displacement_pos,
+                ego_velocity_past_pos,
                 neighbor_pos,
                 static_pos,
                 lane_pos,
@@ -321,68 +310,54 @@ class Encoder(nn.Module):
         return encoder_outputs
 
 
-class EgoVelocityEncoder(nn.Module):
-    def __init__(self, hidden_dim: int) -> None:
+class BoolSequenceEncoder(nn.Module):
+    def __init__(self, seq_len: int, hidden_dim: int, out_dim: int) -> None:
         super().__init__()
-        self.encoder = VectorEncoder(
-            num_float=1,
-            hidden_dim=hidden_dim,
-            class_type=CLASS_TYPE_EGO_VELOCITY,
+        self.embedding = nn.Embedding(2, hidden_dim)
+        self.encoder = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(seq_len * hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.LayerNorm(hidden_dim),
+            nn.Linear(hidden_dim, out_dim),
         )
 
-    def forward(self, current_speed: torch.Tensor) -> EncoderOutput:
-        """
-        Encode the current ego speed as a single context token.
-
-        Args:
-            current_speed: (B, 1) current velocity from ego_current_state.
-
-        Returns:
-            encoding: (B, 1, hidden_dim)
-            mask: (B, 1), always False
-            pos: (B, 1, 4 + CLASS_TYPE_NUM), neutral pose plus class type
-        """
-        return self.encoder(current_speed)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.long()
+        x = self.embedding(x)
+        return self.encoder(x)
 
 
-class EgoDisplacementEncoder(nn.Module):
+class EgoVelocityPastEncoder(nn.Module):
     def __init__(self, time_len: int, hidden_dim: int) -> None:
         super().__init__()
-        self._time_len = time_len
-        self.encoder = VectorEncoder(
-            num_float=3,
-            hidden_dim=hidden_dim,
-            class_type=CLASS_TYPE_EGO_DISPLACEMENT,
-        )
+        emb_dim = 64
+        self.bool_encoder = BoolSequenceEncoder(time_len, emb_dim, hidden_dim)
 
-    def forward(self, ego_agent_past: torch.Tensor) -> EncoderOutput:
+    def forward(
+        self, ego_velocity_past: torch.Tensor, ego_current_pose: torch.Tensor
+    ) -> EncoderOutput:
         """
-        Encode ego displacements at 1s/2s/3s in the past as a single context token.
+        Encode ego past moving/stopped sequence as a single context token.
 
         Args:
-            ego_agent_past: (B, time_len + 1, 4) past ego poses (x, y, cos, sin).
+            ego_velocity_past: (B, time_len, 2) past ego velocity. Only vx is used.
+            ego_current_pose: (B, 4) current ego pose, x, y, cos, sin.
 
         Returns:
             encoding: (B, 1, hidden_dim)
             mask: (B, 1), always False
-            pos: (B, 1, 4 + CLASS_TYPE_NUM), neutral pose plus class type
+            pos: (B, 1, 4 + CLASS_TYPE_NUM), current ego pose plus class type
         """
-        current_pos = ego_agent_past[:, -1, :2]
-        idx_3s = 0
-        idx_2s = self._time_len - 20
-        idx_1s = self._time_len - 10
+        B = ego_velocity_past.shape[0]
 
-        displacement_3s = torch.norm(
-            current_pos - ego_agent_past[:, idx_3s, :2], dim=-1, keepdim=True
-        )
-        displacement_2s = torch.norm(
-            current_pos - ego_agent_past[:, idx_2s, :2], dim=-1, keepdim=True
-        )
-        displacement_1s = torch.norm(
-            current_pos - ego_agent_past[:, idx_1s, :2], dim=-1, keepdim=True
-        )
-        displacements = torch.cat([displacement_3s, displacement_2s, displacement_1s], dim=-1)
-        return self.encoder(displacements)
+        velocity_x = ego_velocity_past[:, :, 0]
+        velocity_bool = velocity_x.abs() > 1e-3
+
+        encoding = self.bool_encoder(velocity_bool).unsqueeze(1)
+        pos = add_class_type(ego_current_pose.clone().unsqueeze(1), CLASS_TYPE_EGO_VELOCITY_PAST)
+        mask = torch.zeros((B, 1), dtype=torch.bool, device=ego_velocity_past.device)
+        return encoding, mask, pos
 
 
 class NeighborEncoder(nn.Module):

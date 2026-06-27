@@ -5,6 +5,7 @@ import torch.nn as nn
 
 import diffusion_planner.model.diffusion_utils.dpm_solver_pytorch as dpm
 from diffusion_planner.model.module.dit import DiT
+from diffusion_planner.model.module.speed_predictor import SpeedPredictor
 from diffusion_planner.model.module.turn_indicator import TurnIndicatorPredictor
 from diffusion_planner.utils.normalizer import ObservationNormalizer, StateNormalizer
 
@@ -49,6 +50,13 @@ class Decoder(nn.Module):
             future_len=self._future_len,
             hidden_dim=config.hidden_dim,
             num_heads=config.num_heads,
+        )
+        self.speed_predictor = SpeedPredictor(
+            future_len=self._future_len,
+            hidden_dim=config.hidden_dim,
+            num_heads=config.num_heads,
+            depth=getattr(config, "speed_predictor_depth", 2),
+            dropout=dpr,
         )
 
         self._state_normalizer: StateNormalizer = config.state_normalizer
@@ -178,6 +186,11 @@ class Decoder(nn.Module):
             encoding,
             encoding_mask,
         )
+        ego_velocity_future_prediction = self.speed_predictor(
+            encoding,
+            gt_trajectories[:, 0, 1:, :],
+            encoding_mask,
+        )
 
         return {
             "model_output": self.dit(
@@ -189,6 +202,7 @@ class Decoder(nn.Module):
                 agent_class=agent_class,
             ).reshape(B, P, -1, self._state_dim),
             "turn_indicator_logit": turn_indicator_logit,
+            "ego_velocity_future_prediction": ego_velocity_future_prediction,
         }
 
     def _inference_x_start(
@@ -279,9 +293,18 @@ class Decoder(nn.Module):
             encoding,
             encoding_mask,
         )
+        ego_velocity_future_prediction = self.speed_predictor(
+            encoding,
+            x0[:, 0, 1:, :],
+            encoding_mask,
+        )
         x0 = self._state_normalizer.inverse(x0)[:, :, 1:]
 
-        return {"prediction": x0, "turn_indicator_logit": turn_indicator_logit}
+        return {
+            "prediction": x0,
+            "turn_indicator_logit": turn_indicator_logit,
+            "ego_velocity_future_prediction": ego_velocity_future_prediction,
+        }
 
     def _forward_inference(
         self,

@@ -82,10 +82,12 @@ def compute_training_loss(
 
     gt_target = all_gt[:, :, 1:, :]  # [B, P, T, 4]
 
-    loss_dict = loss_func(model_output, gt_target)
+    model_output_physical = norm.inverse(model_output)
+    gt_target_physical = norm.inverse(gt_target)
+    loss_dict = loss_func(model_output_physical, gt_target_physical)
     snr_weight = snr_loss_weight(t[..., 1:, 0])
-    position_loss = loss_dict["position_loss"] * snr_weight  # [B, P, T]
-    heading_loss = loss_dict["heading_loss"] * snr_weight  # [B, P, T]
+    position_loss = loss_dict["position_loss"]
+    heading_loss = loss_dict["heading_loss"]  # [B, P, T]
 
     masked_neighbor_position_loss = position_loss[:, 1:, :][neighbors_future_valid]
     masked_neighbor_heading_loss = heading_loss[:, 1:, :][neighbors_future_valid]
@@ -125,6 +127,13 @@ def compute_training_loss(
     turn_indicator_coeff = torch.where(turn_indicator_change, 1.0, 0.05)
     turn_indicator_loss = (turn_indicator_loss * turn_indicator_coeff).mean()
     loss["turn_indicator_loss"] = turn_indicator_loss
+
+    ego_velocity_future_prediction = decoder_output["ego_velocity_future_prediction"]
+    ego_velocity_future_gt = inputs["ego_velocity_future"][..., 0:1]
+    loss["ego_velocity_future_loss"] = F.huber_loss(
+        ego_velocity_future_prediction,
+        ego_velocity_future_gt,
+    )
 
     with torch.no_grad():
         turn_indicator_accuracy = (
