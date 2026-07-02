@@ -9,6 +9,7 @@ dependencies = [
     "natsort>=8.4.0",
     "numpy>=2.0",
     "onnx>=1.21.0",
+    "onnxruntime<1.24",
     "onnxsim>=0.6.3",
     "opencv-python>=4.13.0.92",
     "pandas>=2.0",
