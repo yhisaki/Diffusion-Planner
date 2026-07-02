@@ -58,7 +58,7 @@ class StatePerturbation:
         stop_lon_range: float = 2.5,
         lat_range: float = 1.0,
         yaw_range: float = 0.2,
-        min_speed_threshold: float = 2.0,
+        min_speed_threshold: float = 1.0,
         velocity_scale_range: float = 0.6,
         hermite_translate_distance_m: float = 5.0,
         hermite_connect_distance_m: float = 10.0,
