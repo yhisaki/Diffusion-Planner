@@ -77,7 +77,7 @@ def train_epoch(
             loss["loss"] = (
                 args.alpha_neighbor_loss * loss["neighbor_prediction_loss"]
                 + args.alpha_planning_loss * loss["ego_planning_loss"]
-                + args.alpha_speed_loss * loss["ego_velocity_future_loss"]
+                + args.alpha_speed_loss * loss["ego_speed_prediction_loss"]
                 + loss["turn_indicator_loss"]
             )
 
@@ -121,6 +121,9 @@ def train_epoch(
             avg_speed = sum(l["ego_velocity_future_loss"].item() for l in recent_losses) / len(
                 recent_losses
             )
+            avg_stop = sum(l["ego_stop_future_loss"].item() for l in recent_losses) / len(
+                recent_losses
+            )
             lr = optimizer.param_groups[0]["lr"]
             print(
                 f"  Batch {batch_idx + 1}/{len(data_loader)} | "
@@ -131,6 +134,7 @@ def train_epoch(
                 f"Neighbor Heading: {avg_neighbor_heading:.4f} | "
                 f"Turn: {avg_turn_indicator:.4f} | "
                 f"Speed: {avg_speed:.4f} | "
+                f"Stop: {avg_stop:.4f} | "
                 f"LR: {lr:.6f} | "
                 f"{log_interval} batches: {elapsed_sec:.2f}s"
             )
@@ -155,5 +159,6 @@ def train_epoch(
     if ddp.get_rank() == 0:
         print(f"{epoch_mean_loss['loss']=:.4f}")
         print(f"{epoch_mean_loss['turn_indicator_accuracy']=:.4f}")
+        print(f"{epoch_mean_loss['ego_stop_future_accuracy']=:.4f}")
 
     return epoch_mean_loss, epoch_mean_loss["loss"]

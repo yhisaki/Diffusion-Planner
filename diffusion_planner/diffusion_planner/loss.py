@@ -29,6 +29,43 @@ def snr_loss_weight(t: torch.Tensor) -> torch.Tensor:
     )
 
 
+def make_ego_stop_future_gt(
+    ego_velocity_future_gt: torch.Tensor,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """Return stop labels where vx below 1e-3 is considered stopped."""
+    return (ego_velocity_future_gt < 1e-3).to(dtype)
+
+
+def mixed_stop_future_mask(ego_stop_future_gt: torch.Tensor) -> torch.Tensor:
+    """Return samples whose future contains both stop and non-stop labels."""
+    ego_stop_future_gt_bool = ego_stop_future_gt.bool()
+    has_stop = ego_stop_future_gt_bool.any(dim=(1, 2))
+    has_non_stop = (~ego_stop_future_gt_bool).any(dim=(1, 2))
+    return has_stop & has_non_stop
+
+
+def weighted_ego_stop_future_loss(
+    ego_stop_future_logit: torch.Tensor,
+    ego_stop_future_gt: torch.Tensor,
+    mixed_loss_weight: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Compute stop BCE loss, upweighting samples with mixed stop labels."""
+    element_loss = F.binary_cross_entropy_with_logits(
+        ego_stop_future_logit,
+        ego_stop_future_gt,
+        reduction="none",
+    )
+    mixed_mask = mixed_stop_future_mask(ego_stop_future_gt)
+    sample_weight = torch.ones_like(mixed_mask, dtype=element_loss.dtype)
+    sample_weight = torch.where(
+        mixed_mask,
+        sample_weight * mixed_loss_weight,
+        sample_weight,
+    )
+    return (element_loss * sample_weight[:, None, None]).mean(), mixed_mask
+
+
 def compute_training_loss(
     model: nn.Module,
     inputs: dict[str, torch.Tensor],
@@ -134,12 +171,31 @@ def compute_training_loss(
         ego_velocity_future_prediction,
         ego_velocity_future_gt,
     )
+    ego_stop_future_logit = decoder_output["ego_stop_future_logit"]
+    ego_stop_future_gt = make_ego_stop_future_gt(
+        ego_velocity_future_gt,
+        dtype=ego_stop_future_logit.dtype,
+    )
+    loss["ego_stop_future_loss"], ego_stop_future_mixed = weighted_ego_stop_future_loss(
+        ego_stop_future_logit,
+        ego_stop_future_gt,
+        mixed_loss_weight=getattr(args, "stop_mixed_loss_weight", 5.0),
+    )
+    loss["ego_speed_prediction_loss"] = (
+        loss["ego_velocity_future_loss"]
+        + getattr(args, "alpha_stop_loss", 1.0) * loss["ego_stop_future_loss"]
+    )
 
     with torch.no_grad():
         turn_indicator_accuracy = (
             (turn_indicator_logit.argmax(dim=-1) == turn_indicator_gt).float().mean()
         )
         loss["turn_indicator_accuracy"] = turn_indicator_accuracy
+        ego_stop_future_prediction = torch.sigmoid(ego_stop_future_logit) >= 0.5
+        loss["ego_stop_future_accuracy"] = (
+            ego_stop_future_prediction == ego_stop_future_gt.bool()
+        ).float().mean()
+        loss["ego_stop_future_mixed_ratio"] = ego_stop_future_mixed.float().mean()
 
     return loss
 

@@ -186,7 +186,7 @@ class Decoder(nn.Module):
             encoding,
             encoding_mask,
         )
-        ego_velocity_future_prediction = self.speed_predictor(
+        ego_velocity_future_prediction, ego_stop_future_logit = self.speed_predictor(
             encoding,
             gt_trajectories[:, 0, 1:, :],
             encoding_mask,
@@ -203,6 +203,7 @@ class Decoder(nn.Module):
             ).reshape(B, P, -1, self._state_dim),
             "turn_indicator_logit": turn_indicator_logit,
             "ego_velocity_future_prediction": ego_velocity_future_prediction,
+            "ego_stop_future_logit": ego_stop_future_logit,
         }
 
     def _inference_x_start(
