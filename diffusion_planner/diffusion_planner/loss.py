@@ -29,41 +29,46 @@ def snr_loss_weight(t: torch.Tensor) -> torch.Tensor:
     )
 
 
-def make_ego_stop_future_gt(
-    ego_velocity_future_gt: torch.Tensor,
+def make_ego_stop_gt(
+    ego_velocity_gt: torch.Tensor,
     dtype: torch.dtype,
 ) -> torch.Tensor:
     """Return stop labels where vx below 1e-3 is considered stopped."""
-    return (ego_velocity_future_gt < 1e-3).to(dtype)
+    return (ego_velocity_gt < 1e-3).to(dtype)
 
 
-def mixed_stop_future_mask(ego_stop_future_gt: torch.Tensor) -> torch.Tensor:
-    """Return samples whose future contains both stop and non-stop labels."""
+def ego_stop_transition_mask(
+    ego_stop_current_gt: torch.Tensor,
+    ego_stop_future_gt: torch.Tensor,
+) -> torch.Tensor:
+    """Return, per future step, whether the stop bool switched from the previous step.
+
+    The previous step for the first future timestep is the current stop bool.
+    """
     ego_stop_future_gt_bool = ego_stop_future_gt.bool()
-    has_stop = ego_stop_future_gt_bool.any(dim=(1, 2))
-    has_non_stop = (~ego_stop_future_gt_bool).any(dim=(1, 2))
-    return has_stop & has_non_stop
+    prev_stop_bool = torch.cat([ego_stop_current_gt.bool(), ego_stop_future_gt_bool[:, :-1]], dim=1)
+    return ego_stop_future_gt_bool != prev_stop_bool
 
 
 def weighted_ego_stop_future_loss(
     ego_stop_future_logit: torch.Tensor,
     ego_stop_future_gt: torch.Tensor,
-    mixed_loss_weight: float,
+    ego_stop_current_gt: torch.Tensor,
+    transition_loss_weight: float,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Compute stop BCE loss, upweighting samples with mixed stop labels."""
+    """Compute stop BCE loss, upweighting timesteps where the stop bool switches."""
     element_loss = F.binary_cross_entropy_with_logits(
         ego_stop_future_logit,
         ego_stop_future_gt,
         reduction="none",
     )
-    mixed_mask = mixed_stop_future_mask(ego_stop_future_gt)
-    sample_weight = torch.ones_like(mixed_mask, dtype=element_loss.dtype)
-    sample_weight = torch.where(
-        mixed_mask,
-        sample_weight * mixed_loss_weight,
-        sample_weight,
+    transition_mask = ego_stop_transition_mask(ego_stop_current_gt, ego_stop_future_gt)
+    element_weight = torch.where(
+        transition_mask,
+        torch.full_like(element_loss, transition_loss_weight),
+        torch.ones_like(element_loss),
     )
-    return (element_loss * sample_weight[:, None, None]).mean(), mixed_mask
+    return (element_loss * element_weight).mean(), transition_mask
 
 
 def compute_training_loss(
@@ -172,14 +177,20 @@ def compute_training_loss(
         ego_velocity_future_gt,
     )
     ego_stop_future_logit = decoder_output["ego_stop_future_logit"]
-    ego_stop_future_gt = make_ego_stop_future_gt(
+    ego_stop_future_gt = make_ego_stop_gt(
         ego_velocity_future_gt,
         dtype=ego_stop_future_logit.dtype,
     )
-    loss["ego_stop_future_loss"], ego_stop_future_mixed = weighted_ego_stop_future_loss(
+    ego_velocity_current_gt = inputs["ego_current_state"][:, 4:5].unsqueeze(1)  # [B, 1, 1]
+    ego_stop_current_gt = make_ego_stop_gt(
+        ego_velocity_current_gt,
+        dtype=ego_stop_future_logit.dtype,
+    )
+    loss["ego_stop_future_loss"], ego_stop_future_transition = weighted_ego_stop_future_loss(
         ego_stop_future_logit,
         ego_stop_future_gt,
-        mixed_loss_weight=getattr(args, "stop_mixed_loss_weight", 5.0),
+        ego_stop_current_gt,
+        transition_loss_weight=getattr(args, "stop_transition_loss_weight", 5.0),
     )
     loss["ego_speed_prediction_loss"] = (
         loss["ego_velocity_future_loss"]
@@ -193,9 +204,9 @@ def compute_training_loss(
         loss["turn_indicator_accuracy"] = turn_indicator_accuracy
         ego_stop_future_prediction = torch.sigmoid(ego_stop_future_logit) >= 0.5
         loss["ego_stop_future_accuracy"] = (
-            ego_stop_future_prediction == ego_stop_future_gt.bool()
-        ).float().mean()
-        loss["ego_stop_future_mixed_ratio"] = ego_stop_future_mixed.float().mean()
+            (ego_stop_future_prediction == ego_stop_future_gt.bool()).float().mean()
+        )
+        loss["ego_stop_future_transition_ratio"] = ego_stop_future_transition.float().mean()
 
     return loss
 

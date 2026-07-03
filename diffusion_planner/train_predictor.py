@@ -98,7 +98,7 @@ def get_args():
     parser.add_argument("--alpha_neighbor_loss", type=float, default=0.1)
     parser.add_argument("--alpha_speed_loss", type=float, default=0.1)
     parser.add_argument("--alpha_stop_loss", type=float, default=1.0)
-    parser.add_argument("--stop_mixed_loss_weight", type=float, default=50.0)
+    parser.add_argument("--stop_transition_loss_weight", type=float, default=5.0)
 
     parser.add_argument("--device", type=str, help="run on which device", default="cuda")
 
