@@ -36,29 +36,36 @@ def valid_xy_mask(points: np.ndarray) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
-def _make_vehicle_box(
+_BOX_CORNER_FRACTIONS = [
+    (-0.5, -0.5),
+    (0.5, -0.5),
+    (0.5, 0.5),
+    (-0.5, 0.5),
+    (-0.5, -0.5),
+]
+
+
+def _rotated_box_corners(
     x: float,
     y: float,
     heading: float,
-    wheelbase: float,
-    car_length: float,
-    car_width: float,
+    length: float,
+    width: float,
+    forward_offset: float = 0.0,
 ) -> tuple[list[float], list[float]]:
-    """Compute the 5-corner outline of a vehicle bounding box."""
+    """Compute the 5-corner outline of a rectangle centred *forward_offset* ahead of (x, y).
+
+    Used for ego/neighbor/prediction vehicle boxes (``forward_offset`` = half the
+    wheelbase) as well as static-object boxes (``forward_offset`` = 0).
+    """
     cos_h = float(np.cos(heading))
     sin_h = float(np.sin(heading))
-    cx = x + (wheelbase / 2) * cos_h
-    cy = y + (wheelbase / 2) * sin_h
+    cx = x + forward_offset * cos_h
+    cy = y + forward_offset * sin_h
     bx, by = [], []
-    for dx_frac, dy_frac in [
-        (-0.5, -0.5),
-        (0.5, -0.5),
-        (0.5, 0.5),
-        (-0.5, 0.5),
-        (-0.5, -0.5),
-    ]:
-        dx = car_length * dx_frac
-        dy = car_width * dy_frac
+    for dx_frac, dy_frac in _BOX_CORNER_FRACTIONS:
+        dx = length * dx_frac
+        dy = width * dy_frac
         bx.append(dx * cos_h - dy * sin_h + cx)
         by.append(dx * sin_h + dy * cos_h + cy)
     return bx, by
@@ -89,13 +96,13 @@ def draw_ego_footprints(
     for i in range(0, len(future), interval):
         state = future[i]
         heading = float(state[2]) if future.shape[1] >= 3 else 0.0
-        bx, by = _make_vehicle_box(
+        bx, by = _rotated_box_corners(
             float(state[0]),
             float(state[1]),
             heading,
-            wheelbase,
             car_length,
             car_width,
+            forward_offset=wheelbase / 2,
         )
         traces.append(
             go.Scatter(
@@ -150,13 +157,13 @@ def draw_prediction_footprints(
     for i in range(0, len(pred), interval):
         state = pred[i]
         heading = float(np.arctan2(state[3], state[2]))
-        bx, by = _make_vehicle_box(
+        bx, by = _rotated_box_corners(
             float(state[0]),
             float(state[1]),
             heading,
-            wheelbase,
             car_length,
             car_width,
+            forward_offset=wheelbase / 2,
         )
         traces.append(
             go.Scatter(
@@ -191,16 +198,10 @@ def draw_ego_vehicle(data: dict[str, np.ndarray]) -> list[go.Scatter]:
     wheelbase = float(ego_shape[0])
     car_length = float(ego_shape[1])
     car_width = float(ego_shape[2])
-    ego_cos, ego_sin = float(ego_state[2]), float(ego_state[3])
-    cx = ego_x + (wheelbase / 2) * ego_cos
-    cy = ego_y + (wheelbase / 2) * ego_sin
-
-    corners_x, corners_y = [], []
-    for dx_frac, dy_frac in [(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5), (-0.5, -0.5)]:
-        dx = car_length * dx_frac
-        dy = car_width * dy_frac
-        corners_x.append(dx * ego_cos - dy * ego_sin + cx)
-        corners_y.append(dx * ego_sin + dy * ego_cos + cy)
+    ego_heading = float(np.arctan2(ego_state[3], ego_state[2]))
+    corners_x, corners_y = _rotated_box_corners(
+        ego_x, ego_y, ego_heading, car_length, car_width, forward_offset=wheelbase / 2
+    )
     traces.append(
         go.Scatter(
             x=corners_x,
@@ -297,14 +298,8 @@ def draw_neighbor_agents(data: dict[str, np.ndarray]) -> list[go.Scatter]:
                 )
             )
 
-        heading_n = np.arctan2(n_sin, n_cos)
-        cos_h, sin_h = np.cos(heading_n), np.sin(heading_n)
-        bx, by = [], []
-        for dx_frac, dy_frac in [(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5), (-0.5, -0.5)]:
-            dx = len_x_dim * dx_frac
-            dy = len_y_dim * dy_frac
-            bx.append(dx * cos_h - dy * sin_h + n_x)
-            by.append(dx * sin_h + dy * cos_h + n_y)
+        heading_n = float(np.arctan2(n_sin, n_cos))
+        bx, by = _rotated_box_corners(n_x, n_y, heading_n, len_x_dim, len_y_dim)
         traces.append(
             go.Scatter(
                 x=bx,
@@ -476,13 +471,7 @@ def draw_static_objects(data: dict[str, np.ndarray]) -> list[go.Scatter]:
         obj_length = float(obj[5]) if obj.shape[0] > 5 else 1.0
         obj_type = int(np.argmax(obj[-4:])) if obj.shape[0] >= 10 else 0
         obj_color = colors_map[obj_type % len(colors_map)]
-        cos_h, sin_h = np.cos(obj_heading), np.sin(obj_heading)
-        bx, by = [], []
-        for dx_frac, dy_frac in [(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5), (-0.5, -0.5)]:
-            dx = obj_length * dx_frac
-            dy = obj_width * dy_frac
-            bx.append(dx * cos_h - dy * sin_h + obj_x)
-            by.append(dx * sin_h + dy * cos_h + obj_y)
+        bx, by = _rotated_box_corners(obj_x, obj_y, obj_heading, obj_length, obj_width)
         traces.append(
             go.Scatter(
                 x=bx,

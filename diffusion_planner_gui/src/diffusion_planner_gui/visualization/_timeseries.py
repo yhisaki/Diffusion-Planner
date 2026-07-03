@@ -30,6 +30,25 @@ def past_positions(data: dict[str, np.ndarray]) -> tuple[np.ndarray, np.ndarray]
     return t, positions
 
 
+def future_positions(data: dict[str, np.ndarray]) -> tuple[np.ndarray, np.ndarray] | None:
+    """Extract ego future (x, y) positions starting from the current state.
+
+    Args:
+        data: NPZ data dict (requires ``"ego_agent_future"``).
+
+    Returns:
+        ``(t, positions)`` where ``t`` starts at 0 and ``positions`` is
+        ``(N, 2)``.  Returns ``None`` if future data is unavailable.
+    """
+    if "ego_agent_future" not in data:
+        return None
+    ego_state = data["ego_current_state"].reshape(-1)
+    future = data["ego_agent_future"].reshape(-1, data["ego_agent_future"].shape[-1])
+    positions = np.vstack([[ego_state[0], ego_state[1]], future[:, :2]])
+    t = np.arange(len(positions))
+    return t, positions
+
+
 def past_heading_cos_sin(
     data: dict[str, np.ndarray],
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:

@@ -8,7 +8,7 @@ import numpy as np
 import streamlit as st
 
 from diffusion_planner_gui.loader import load_npz
-from diffusion_planner_gui.views.sidebar import _get_predictor
+from diffusion_planner_gui.predictor_cache import get_predictor
 from diffusion_planner_gui.visualization import (
     plot_prediction_vs_gt,
     plot_tcos,
@@ -39,45 +39,44 @@ def _npz_bytes(data: dict[str, np.ndarray]) -> bytes:
     return buffer.getvalue()
 
 
-def render_main() -> None:
-    npz_paths = st.session_state.npz_paths
-    idx = st.session_state.current_index
-    n_total = len(npz_paths)
-    npz_path = npz_paths[idx]
+def _predict_current_sample(
+    npz_path, data: dict[str, np.ndarray], is_augmented: bool, model_loaded: bool
+) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """Run the loaded model on the current sample, if any model is loaded."""
+    if not model_loaded:
+        return None, None
+    predictor = get_predictor(st.session_state.model_path, "auto")
+    if predictor is None:
+        return None, None
+    return predictor.predict_with_velocity(
+        npz_path=None if is_augmented else npz_path,
+        data=data if is_augmented else None,
+        noise_scale=st.session_state.noise_scale,
+        noise_seed=st.session_state.noise_seed,
+    )
 
-    data, is_augmented = _current_data(npz_path)
 
-    model_loaded = st.session_state.model_loaded
+def _render_trajectory_and_timeseries(
+    data: dict[str, np.ndarray],
+    prediction: np.ndarray | None,
+    ego_velocity_prediction: np.ndarray | None,
+) -> None:
     view_range = 40
     gt_interval = st.session_state.footprint_interval if st.session_state.show_gt_footprint else 0
     pred_interval = (
         st.session_state.footprint_interval if st.session_state.show_pred_footprint else 0
     )
 
-    prediction = None
-    ego_velocity_prediction = None
-    if model_loaded:
-        predictor = _get_predictor(st.session_state.model_path, "auto")
-        if predictor is not None:
-            prediction, ego_velocity_prediction = predictor.predict_with_velocity(
-                npz_path=None if is_augmented else npz_path,
-                data=data if is_augmented else None,
-                noise_scale=st.session_state.noise_scale,
-                noise_seed=st.session_state.noise_seed,
-            )
-        if prediction is not None:
-            traj_fig = plot_prediction_vs_gt(
-                data,
-                prediction,
-                view_range=view_range,
-                footprint_interval=gt_interval,
-                pred_footprint_interval=pred_interval,
-            )
-        else:
-            traj_fig = plot_trajectory(data, view_range=view_range, footprint_interval=gt_interval)
+    if prediction is not None:
+        traj_fig = plot_prediction_vs_gt(
+            data,
+            prediction,
+            view_range=view_range,
+            footprint_interval=gt_interval,
+            pred_footprint_interval=pred_interval,
+        )
     else:
         traj_fig = plot_trajectory(data, view_range=view_range, footprint_interval=gt_interval)
-
     st.plotly_chart(traj_fig, width="stretch")
 
     col1, col2 = st.columns(2)
@@ -94,32 +93,57 @@ def render_main() -> None:
 
     st.plotly_chart(plot_tv(data, prediction, ego_velocity_prediction), width="stretch")
 
-    with st.sidebar:
-        info = f"Sample {idx + 1} / {n_total} — {npz_path.name}"
-        if model_loaded:
-            info += (
-                f"\nModel: {st.session_state.model_path}\n"
-                f"Noise scale: {st.session_state.noise_scale:.2f}\n"
-                f"Noise seed: {st.session_state.noise_seed}"
-            )
 
-        st.info(info)
+def _render_sample_info(
+    npz_path,
+    data: dict[str, np.ndarray],
+    is_augmented: bool,
+    idx: int,
+    n_total: int,
+    model_loaded: bool,
+) -> None:
+    info = f"Sample {idx + 1} / {n_total} — {npz_path.name}"
+    if model_loaded:
+        info += (
+            f"\nModel: {st.session_state.model_path}\n"
+            f"Noise scale: {st.session_state.noise_scale:.2f}\n"
+            f"Noise seed: {st.session_state.noise_seed}"
+        )
+    st.info(info)
 
-        ego_state = data["ego_current_state"].reshape(-1)
-        st.text_area(
-            "ego_current_state",
-            _format_ego_state(ego_state),
-            height=200,
-            disabled=True,
-            label_visibility="collapsed",
+    ego_state = data["ego_current_state"].reshape(-1)
+    st.text_area(
+        "ego_current_state",
+        _format_ego_state(ego_state),
+        height=200,
+        disabled=True,
+        label_visibility="collapsed",
+    )
+
+    with open(str(npz_path), "rb") as f:
+        download_data = _npz_bytes(data) if is_augmented else f.read()
+        download_name = f"{npz_path.stem}_augmented.npz" if is_augmented else npz_path.name
+        st.download_button(
+            "Download this NPZ",
+            download_data,
+            file_name=download_name,
+            mime="application/octet-stream",
         )
 
-        with open(str(npz_path), "rb") as f:
-            download_data = _npz_bytes(data) if is_augmented else f.read()
-            download_name = f"{npz_path.stem}_augmented.npz" if is_augmented else npz_path.name
-            st.download_button(
-                "Download this NPZ",
-                download_data,
-                file_name=download_name,
-                mime="application/octet-stream",
-            )
+
+def render_main() -> None:
+    npz_paths = st.session_state.npz_paths
+    idx = st.session_state.current_index
+    n_total = len(npz_paths)
+    npz_path = npz_paths[idx]
+    model_loaded = st.session_state.model_loaded
+
+    data, is_augmented = _current_data(npz_path)
+    prediction, ego_velocity_prediction = _predict_current_sample(
+        npz_path, data, is_augmented, model_loaded
+    )
+
+    _render_trajectory_and_timeseries(data, prediction, ego_velocity_prediction)
+
+    with st.sidebar:
+        _render_sample_info(npz_path, data, is_augmented, idx, n_total, model_loaded)

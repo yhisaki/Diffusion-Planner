@@ -15,6 +15,7 @@ import plotly.graph_objects as go
 
 from ._timeseries import (
     future_heading_cos_sin,
+    future_positions,
     future_speeds,
     past_heading_cos_sin,
     past_positions,
@@ -22,6 +23,8 @@ from ._timeseries import (
 )
 
 _PRED_COLOR = "#1F77B4"
+
+Series = tuple[np.ndarray, np.ndarray]
 
 
 def _extract_ego_prediction(prediction: np.ndarray | None) -> np.ndarray | None:
@@ -43,23 +46,136 @@ def _extract_ego_prediction(prediction: np.ndarray | None) -> np.ndarray | None:
     return None
 
 
-def _add_pred_trace(fig: go.Figure, t: np.ndarray, y: np.ndarray, name: str) -> None:
-    """Add a dashed prediction trace to *fig*."""
-    fig.add_trace(
-        go.Scatter(
-            x=t,
-            y=y,
-            mode="lines+markers",
-            name=name,
-            line=dict(color=_PRED_COLOR, width=2, dash="dash"),
-            marker=dict(size=3),
+def _plot_timeseries(
+    past: Series | None,
+    future: Series | None,
+    pred: Series | None,
+    *,
+    title: str,
+    yaxis_title: str,
+    past_name: str,
+    future_name: str,
+    pred_name: str,
+    dim_future: bool | None = None,
+) -> go.Figure:
+    """Build a standard past/future/prediction time-series Plotly figure.
+
+    Args:
+        past: Optional ``(t, values)`` for the past trace (drawn orange).
+        future: Optional ``(t, values)`` for the GT future trace (drawn black,
+            dimmed to 0.35 opacity when *dim_future* — defaulting to whether
+            *pred* is given — is true).
+        pred: Optional ``(t, values)`` for the prediction trace (drawn as a
+            blue dashed line).
+        title: Figure title.
+        yaxis_title: Y-axis label.
+        past_name: Legend name for the past trace.
+        future_name: Legend name for the GT future trace.
+        pred_name: Legend name for the prediction trace.
+        dim_future: Overrides whether the GT future trace is dimmed. Defaults
+            to ``pred is not None``.
+
+    Returns:
+        Plotly Figure.
+    """
+    fig = go.Figure()
+    has_data = False
+
+    if past is not None:
+        t, values = past
+        fig.add_trace(
+            go.Scatter(
+                x=t,
+                y=values,
+                mode="lines+markers",
+                name=past_name,
+                line=dict(color="orange", width=2),
+                marker=dict(size=3),
+            )
         )
+        has_data = True
+
+    if future is not None:
+        t, values = future
+        if dim_future is None:
+            dim_future = pred is not None
+        gt_opacity = 0.35 if dim_future else 1.0
+        fig.add_trace(
+            go.Scatter(
+                x=t,
+                y=values,
+                mode="lines+markers",
+                name=future_name,
+                line=dict(color="black", width=2),
+                marker=dict(size=3),
+                opacity=gt_opacity,
+            )
+        )
+        has_data = True
+
+    if pred is not None:
+        t, values = pred
+        fig.add_trace(
+            go.Scatter(
+                x=t,
+                y=values,
+                mode="lines+markers",
+                name=pred_name,
+                line=dict(color=_PRED_COLOR, width=2, dash="dash"),
+                marker=dict(size=3),
+            )
+        )
+        has_data = True
+
+    if not has_data:
+        fig.update_layout(template="plotly_white", title=title, height=400)
+        return fig
+
+    fig.update_layout(
+        template="plotly_white",
+        title=title,
+        xaxis_title="Time step",
+        yaxis_title=yaxis_title,
+        height=400,
+        margin=dict(l=50, r=20, t=40, b=40),
+        legend=dict(font=dict(size=9)),
+    )
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# t-x / t-y (position)
+# ---------------------------------------------------------------------------
+
+
+def _plot_position_axis(
+    data: dict[str, np.ndarray],
+    prediction: np.ndarray | None,
+    *,
+    axis_index: int,
+    axis_label: str,
+) -> go.Figure:
+    past = past_positions(data)
+    past_series = (past[0], past[1][:, axis_index]) if past is not None else None
+
+    future = future_positions(data)
+    future_series = (future[0], future[1][:, axis_index]) if future is not None else None
+
+    ego_pred = _extract_ego_prediction(prediction)
+    pred_series = (
+        (np.arange(len(ego_pred)), ego_pred[:, axis_index]) if ego_pred is not None else None
     )
 
-
-# ---------------------------------------------------------------------------
-# t-x
-# ---------------------------------------------------------------------------
+    return _plot_timeseries(
+        past_series,
+        future_series,
+        pred_series,
+        title=axis_label,
+        yaxis_title=f"{axis_label} [m]",
+        past_name=f"Past {axis_label}",
+        future_name=f"GT {axis_label}",
+        pred_name=f"Pred {axis_label}",
+    )
 
 
 def plot_tx(data: dict[str, np.ndarray], prediction: np.ndarray | None = None) -> go.Figure:
@@ -73,69 +189,7 @@ def plot_tx(data: dict[str, np.ndarray], prediction: np.ndarray | None = None) -
     Returns:
         Plotly Figure.
     """
-    fig = go.Figure()
-    has_data = False
-
-    pr = past_positions(data)
-    if pr is not None:
-        t, positions = pr
-        fig.add_trace(
-            go.Scatter(
-                x=t,
-                y=positions[:, 0],
-                mode="lines+markers",
-                name="Past X",
-                line=dict(color="orange", width=2),
-                marker=dict(size=3),
-            )
-        )
-        has_data = True
-
-    ego_pred = _extract_ego_prediction(prediction)
-
-    if "ego_agent_future" in data:
-        ego_state = data["ego_current_state"].reshape(-1)
-        future = data["ego_agent_future"].reshape(-1, data["ego_agent_future"].shape[-1])
-        positions = np.vstack([[ego_state[0], ego_state[1]], future[:, :2]])
-        t = np.arange(len(positions))
-        gt_opacity = 0.35 if ego_pred is not None else 1.0
-        fig.add_trace(
-            go.Scatter(
-                x=t,
-                y=positions[:, 0],
-                mode="lines+markers",
-                name="GT X",
-                line=dict(color="black", width=2),
-                marker=dict(size=3),
-                opacity=gt_opacity,
-            )
-        )
-        has_data = True
-
-    if ego_pred is not None:
-        _add_pred_trace(fig, np.arange(len(ego_pred)), ego_pred[:, 0], "Pred X")
-        has_data = True
-
-    title = "X"
-    if not has_data:
-        fig.update_layout(template="plotly_white", title="X", height=400)
-        return fig
-
-    fig.update_layout(
-        template="plotly_white",
-        title=title,
-        xaxis_title="Time step",
-        yaxis_title="X [m]",
-        height=400,
-        margin=dict(l=50, r=20, t=40, b=40),
-        legend=dict(font=dict(size=9)),
-    )
-    return fig
-
-
-# ---------------------------------------------------------------------------
-# t-y
-# ---------------------------------------------------------------------------
+    return _plot_position_axis(data, prediction, axis_index=0, axis_label="X")
 
 
 def plot_ty(data: dict[str, np.ndarray], prediction: np.ndarray | None = None) -> go.Figure:
@@ -149,69 +203,44 @@ def plot_ty(data: dict[str, np.ndarray], prediction: np.ndarray | None = None) -
     Returns:
         Plotly Figure.
     """
-    fig = go.Figure()
-    has_data = False
+    return _plot_position_axis(data, prediction, axis_index=1, axis_label="Y")
 
-    pr = past_positions(data)
-    if pr is not None:
-        t, positions = pr
-        fig.add_trace(
-            go.Scatter(
-                x=t,
-                y=positions[:, 1],
-                mode="lines+markers",
-                name="Past Y",
-                line=dict(color="orange", width=2),
-                marker=dict(size=3),
-            )
-        )
-        has_data = True
+
+# ---------------------------------------------------------------------------
+# t-cos / t-sin (heading)
+# ---------------------------------------------------------------------------
+
+
+def _plot_heading_component(
+    data: dict[str, np.ndarray],
+    prediction: np.ndarray | None,
+    *,
+    component_index: int,
+    component_label: str,
+) -> go.Figure:
+    past = past_heading_cos_sin(data)
+    past_series = (past[0], past[component_index]) if past is not None else None
+
+    future = future_heading_cos_sin(data)
+    future_series = (future[0], future[component_index]) if future is not None else None
 
     ego_pred = _extract_ego_prediction(prediction)
-
-    if "ego_agent_future" in data:
-        ego_state = data["ego_current_state"].reshape(-1)
-        future = data["ego_agent_future"].reshape(-1, data["ego_agent_future"].shape[-1])
-        positions = np.vstack([[ego_state[0], ego_state[1]], future[:, :2]])
-        t = np.arange(len(positions))
-        gt_opacity = 0.35 if ego_pred is not None else 1.0
-        fig.add_trace(
-            go.Scatter(
-                x=t,
-                y=positions[:, 1],
-                mode="lines+markers",
-                name="GT Y",
-                line=dict(color="black", width=2),
-                marker=dict(size=3),
-                opacity=gt_opacity,
-            )
-        )
-        has_data = True
-
-    if ego_pred is not None:
-        _add_pred_trace(fig, np.arange(len(ego_pred)), ego_pred[:, 1], "Pred Y")
-        has_data = True
-
-    title = "Y"
-    if not has_data:
-        fig.update_layout(template="plotly_white", title="Y", height=400)
-        return fig
-
-    fig.update_layout(
-        template="plotly_white",
-        title=title,
-        xaxis_title="Time step",
-        yaxis_title="Y [m]",
-        height=400,
-        margin=dict(l=50, r=20, t=40, b=40),
-        legend=dict(font=dict(size=9)),
+    pred_series = (
+        (np.arange(len(ego_pred)), ego_pred[:, component_index + 1])
+        if ego_pred is not None
+        else None
     )
-    return fig
 
-
-# ---------------------------------------------------------------------------
-# t-cos
-# ---------------------------------------------------------------------------
+    return _plot_timeseries(
+        past_series,
+        future_series,
+        pred_series,
+        title=component_label,
+        yaxis_title=f"{component_label}(heading)",
+        past_name=f"Past {component_label}",
+        future_name=f"GT {component_label}",
+        pred_name=f"Pred {component_label}",
+    )
 
 
 def plot_tcos(data: dict[str, np.ndarray], prediction: np.ndarray | None = None) -> go.Figure:
@@ -224,67 +253,7 @@ def plot_tcos(data: dict[str, np.ndarray], prediction: np.ndarray | None = None)
     Returns:
         Plotly Figure with past cos (orange) and future cos (black) traces.
     """
-    fig = go.Figure()
-    has_data = False
-
-    pr = past_heading_cos_sin(data)
-    if pr is not None:
-        t, cos_vals, _ = pr
-        fig.add_trace(
-            go.Scatter(
-                x=t,
-                y=cos_vals,
-                mode="lines+markers",
-                name="Past cos",
-                line=dict(color="orange", width=2),
-                marker=dict(size=3),
-            )
-        )
-        has_data = True
-
-    ego_pred = _extract_ego_prediction(prediction)
-
-    fr = future_heading_cos_sin(data)
-    if fr is not None:
-        t, cos_vals, _ = fr
-        gt_opacity = 0.35 if ego_pred is not None else 1.0
-        fig.add_trace(
-            go.Scatter(
-                x=t,
-                y=cos_vals,
-                mode="lines+markers",
-                name="GT cos",
-                line=dict(color="black", width=2),
-                marker=dict(size=3),
-                opacity=gt_opacity,
-            )
-        )
-        has_data = True
-
-    if ego_pred is not None:
-        _add_pred_trace(fig, np.arange(len(ego_pred)), ego_pred[:, 2], "Pred cos")
-        has_data = True
-
-    title = "cos"
-    if not has_data:
-        fig.update_layout(template="plotly_white", title="cos", height=400)
-        return fig
-
-    fig.update_layout(
-        template="plotly_white",
-        title=title,
-        xaxis_title="Time step",
-        yaxis_title="cos(heading)",
-        height=400,
-        margin=dict(l=50, r=20, t=40, b=40),
-        legend=dict(font=dict(size=9)),
-    )
-    return fig
-
-
-# ---------------------------------------------------------------------------
-# t-sin
-# ---------------------------------------------------------------------------
+    return _plot_heading_component(data, prediction, component_index=1, component_label="cos")
 
 
 def plot_tsin(data: dict[str, np.ndarray], prediction: np.ndarray | None = None) -> go.Figure:
@@ -297,62 +266,7 @@ def plot_tsin(data: dict[str, np.ndarray], prediction: np.ndarray | None = None)
     Returns:
         Plotly Figure with past sin (orange) and future sin (black) traces.
     """
-    fig = go.Figure()
-    has_data = False
-
-    pr = past_heading_cos_sin(data)
-    if pr is not None:
-        t, _, sin_vals = pr
-        fig.add_trace(
-            go.Scatter(
-                x=t,
-                y=sin_vals,
-                mode="lines+markers",
-                name="Past sin",
-                line=dict(color="orange", width=2),
-                marker=dict(size=3),
-            )
-        )
-        has_data = True
-
-    ego_pred = _extract_ego_prediction(prediction)
-
-    fr = future_heading_cos_sin(data)
-    if fr is not None:
-        t, _, sin_vals = fr
-        gt_opacity = 0.35 if ego_pred is not None else 1.0
-        fig.add_trace(
-            go.Scatter(
-                x=t,
-                y=sin_vals,
-                mode="lines+markers",
-                name="GT sin",
-                line=dict(color="black", width=2),
-                marker=dict(size=3),
-                opacity=gt_opacity,
-            )
-        )
-        has_data = True
-
-    if ego_pred is not None:
-        _add_pred_trace(fig, np.arange(len(ego_pred)), ego_pred[:, 3], "Pred sin")
-        has_data = True
-
-    title = "sin"
-    if not has_data:
-        fig.update_layout(template="plotly_white", title="sin", height=400)
-        return fig
-
-    fig.update_layout(
-        template="plotly_white",
-        title=title,
-        xaxis_title="Time step",
-        yaxis_title="sin(heading)",
-        height=400,
-        margin=dict(l=50, r=20, t=40, b=40),
-        legend=dict(font=dict(size=9)),
-    )
-    return fig
+    return _plot_heading_component(data, prediction, component_index=2, component_label="sin")
 
 
 # ---------------------------------------------------------------------------
@@ -379,64 +293,29 @@ def plot_tv(
     Returns:
         Plotly Figure with past speed (orange) and future speed (black) traces.
     """
-    fig = go.Figure()
-    has_data = False
+    past = past_speeds(data)
 
-    pr = past_speeds(data)
-    if pr is not None:
-        t, speeds = pr
-        fig.add_trace(
-            go.Scatter(
-                x=t,
-                y=speeds,
-                mode="lines+markers",
-                name="Past speed",
-                line=dict(color="orange", width=2),
-                marker=dict(size=3),
-            )
-        )
-        has_data = True
+    future = None
+    if "ego_velocity_future" in data or "ego_agent_future" in data:
+        future = future_speeds(data)
 
-    ego_pred = _extract_ego_prediction(prediction)
     pred_speed = None
     if ego_velocity_prediction is not None:
         pred_speed = np.asarray(ego_velocity_prediction).reshape(-1)
+    has_pred_speed = pred_speed is not None and pred_speed.size > 0
+    pred = (np.arange(1, pred_speed.size + 1), pred_speed) if has_pred_speed else None
 
-    if "ego_velocity_future" in data or "ego_agent_future" in data:
-        fr = future_speeds(data)
-        if fr is not None:
-            t, speeds = fr
-            gt_opacity = 0.35 if ego_pred is not None or pred_speed is not None else 1.0
-            fig.add_trace(
-                go.Scatter(
-                    x=t,
-                    y=speeds,
-                    mode="lines+markers",
-                    name="GT speed",
-                    line=dict(color="black", width=2),
-                    marker=dict(size=3),
-                    opacity=gt_opacity,
-                )
-            )
-            has_data = True
+    ego_pred = _extract_ego_prediction(prediction)
+    dim_future = ego_pred is not None or has_pred_speed
 
-    if pred_speed is not None and pred_speed.size > 0:
-        pred_t = np.arange(1, pred_speed.size + 1)
-        _add_pred_trace(fig, pred_t, pred_speed, "Pred speed")
-        has_data = True
-
-    title = "V"
-    if not has_data:
-        fig.update_layout(template="plotly_white", title="V", height=400)
-        return fig
-
-    fig.update_layout(
-        template="plotly_white",
-        title=title,
-        xaxis_title="Time step",
+    return _plot_timeseries(
+        past,
+        future,
+        pred,
+        title="V",
         yaxis_title="speed [m/s]",
-        height=400,
-        margin=dict(l=50, r=20, t=40, b=40),
-        legend=dict(font=dict(size=9)),
+        past_name="Past speed",
+        future_name="GT speed",
+        pred_name="Pred speed",
+        dim_future=dim_future,
     )
-    return fig

@@ -7,19 +7,8 @@ from pathlib import Path
 import streamlit as st
 from diffusion_planner.utils.data_augmentation import StatePerturbation
 
-from diffusion_planner_gui.inference import Predictor
 from diffusion_planner_gui.loader import load_npz, resolve_data_path
-
-
-@st.cache_resource
-def _get_predictor(model_path: str, device: str) -> Predictor | None:
-    if not model_path:
-        return None
-    try:
-        return Predictor(model_path, device)
-    except Exception as e:
-        st.session_state.last_model_error = str(e)
-        return None
+from diffusion_planner_gui.predictor_cache import get_predictor
 
 
 def render_sidebar() -> None:
@@ -70,7 +59,7 @@ def _on_load() -> None:
     model_loaded = False
     if model_path:
         model_path_resolved = str(Path(model_path).expanduser().resolve())
-        predictor = _get_predictor(model_path_resolved, "auto")
+        predictor = get_predictor(model_path_resolved, "auto")
         if predictor is not None:
             st.session_state.model_path = model_path_resolved
             model_loaded = True
