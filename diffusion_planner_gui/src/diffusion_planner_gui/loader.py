@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from diffusion_planner.utils.dataset import add_current_state_to_ego_agent_future
 
 
 def discover_npz_files(directory: str | Path) -> list[Path]:
@@ -25,6 +26,9 @@ def load_npz(path: str | Path) -> dict[str, np.ndarray]:
             if key in {"map_name", "token", "delay", "version"}:
                 continue
             data[key] = f[key]
+    
+    data = add_current_state_to_ego_agent_future(data)
+    
     return data
 
 

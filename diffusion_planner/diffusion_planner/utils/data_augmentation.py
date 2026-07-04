@@ -24,11 +24,9 @@ class AugumentedEgoPosition:
 class StatePerturbationConfig:
     path_augment_prob: float
     velocity_augment_prob: float
-    stop_lon_range: float
     lat_range: float
     yaw_range: float
     velocity_scale_range: float
-    hermite_connect_distance_m: float
 
 
 class StatePerturbation:
@@ -43,20 +41,16 @@ class StatePerturbation:
         self,
         path_augment_prob: float = 0.5,
         velocity_augment_prob: float = 0.5,
-        stop_lon_range: float = 4.0,
         lat_range: float = 1.0,
         yaw_range: float = 0.2,
         velocity_scale_range: float = 0.6,
-        hermite_connect_distance_m: float = 10.0,
     ) -> None:
         self.config = StatePerturbationConfig(
             path_augment_prob=path_augment_prob,
             velocity_augment_prob=velocity_augment_prob,
-            stop_lon_range=stop_lon_range,
             lat_range=lat_range,
             yaw_range=yaw_range,
             velocity_scale_range=velocity_scale_range,
-            hermite_connect_distance_m=hermite_connect_distance_m,
         )
 
     def augment(self, data: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
@@ -66,13 +60,11 @@ class StatePerturbation:
         }
 
         if np.random.random() <= self.config.path_augment_prob:
-            is_vehicle_stopping = data.get("ego_current_state")[4] < 1e-3
-            augumented_ego_pos = self._get_augment_ego_position(is_vehicle_stopping)
+            augumented_ego_pos = self._get_augment_ego_position()
             self._add_original_gt_in_augmented_frame(
                 augmented, augumented_ego_pos, source_data=data
             )
             self._transform_scene_to_new_ego_frame(augmented, augumented_ego_pos)
-            self._connect_ego_future_with_hermite(augmented)
             self._reset_ego_current_state(augmented, augumented_ego_pos)
         else:
             self._add_default_aux_keys(augmented)
@@ -112,15 +104,11 @@ class StatePerturbation:
             data["original_ego_agent_future_in_augmented_frame"] = np.array(ego_future, copy=True)
         data["augmentation_perturbation"] = np.zeros(3, dtype=np.float32)
 
-    def _get_augment_ego_position(self, is_vehicle_stopping: bool) -> AugumentedEgoPosition:
+    def _get_augment_ego_position(self) -> AugumentedEgoPosition:
         cfg = self.config
-        if is_vehicle_stopping:
-            x = float(np.random.uniform(-cfg.stop_lon_range, cfg.stop_lon_range))
-        else:
-            x = 0.0
         y = float(np.random.uniform(-cfg.lat_range, cfg.lat_range))
         theta = float(np.random.uniform(-cfg.yaw_range, cfg.yaw_range))
-        return AugumentedEgoPosition(float(x), float(y), float(theta))
+        return AugumentedEgoPosition(0.0, y, float(theta))
 
     def _augument_velocity_past(self, data: dict[str, np.ndarray]) -> None:
         ego_velocity_past = data.get("ego_velocity_past")
@@ -131,100 +119,6 @@ class StatePerturbation:
             (past_length,),
         )
         ego_velocity_past *= veloctiy_scale[:, np.newaxis]
-
-    def _connect_ego_future_with_hermite(self, data: dict[str, np.ndarray]) -> None:
-        future = data.get("ego_agent_future")
-        if future is None or future.shape[-1] < 3:
-            return
-
-        flat = future.reshape(-1, future.shape[-1])
-        if flat.shape[0] == 0:
-            return
-
-        distances = self._future_sample_distances(flat)
-        anchor_idx = self._hermite_anchor_index(distances)
-        if anchor_idx is None:
-            return
-        if anchor_idx == 0:
-            return
-
-        anchor_xy = flat[anchor_idx, :2].astype(np.float64)
-        anchor_distance = float(distances[anchor_idx])
-        if anchor_distance <= 1e-6:
-            return
-
-        start_xy = np.zeros(2, dtype=np.float64)
-        start_heading = 0.0
-        end_heading = float(flat[anchor_idx, 2])
-        start_tangent = anchor_distance * np.array(
-            [np.cos(start_heading), np.sin(start_heading)], dtype=np.float64
-        )
-        end_tangent = anchor_distance * np.array(
-            [np.cos(end_heading), np.sin(end_heading)], dtype=np.float64
-        )
-
-        sample_u = np.linspace(0.0, 1.0, anchor_idx + 1, dtype=np.float64)[:-1]
-
-        for i, u in enumerate(sample_u):
-            xy, tangent = self._cubic_hermite(start_xy, anchor_xy, start_tangent, end_tangent, u)
-            flat[i, 0] = xy[0]
-            flat[i, 1] = xy[1]
-            if np.linalg.norm(tangent) > 1e-6:
-                flat[i, 2] = np.arctan2(tangent[1], tangent[0])
-
-    @staticmethod
-    def _future_sample_distances(future: np.ndarray) -> np.ndarray:
-        distances = np.zeros(future.shape[0], dtype=np.float64)
-        if future.shape[0] == 0:
-            return distances
-
-        xy = future[:, :2].astype(np.float64)
-        if future.shape[0] == 1:
-            distances[0] = float(np.linalg.norm(xy[0]))
-            return distances
-
-        segment_lengths = np.linalg.norm(np.diff(xy, axis=0), axis=1)
-        valid_segment_lengths = segment_lengths[segment_lengths > 1e-6]
-        if valid_segment_lengths.size == 0:
-            distances[0] = float(np.linalg.norm(xy[0]))
-            return distances
-
-        interval = float(np.median(valid_segment_lengths))
-        return interval * (np.arange(future.shape[0], dtype=np.float64) + 1.0)
-
-    def _hermite_anchor_index(self, distances: np.ndarray) -> int | None:
-        valid = np.flatnonzero(distances > 1e-6)
-        if valid.size == 0:
-            return None
-
-        connect_distance = max(0.0, float(self.config.hermite_connect_distance_m))
-        if connect_distance <= 1e-6:
-            return None
-
-        candidates = np.flatnonzero(distances >= connect_distance)
-        if candidates.size > 0:
-            return int(candidates[0])
-        return int(valid[-1])
-
-    @staticmethod
-    def _cubic_hermite(
-        p0: np.ndarray, p1: np.ndarray, m0: np.ndarray, m1: np.ndarray, u: float
-    ) -> tuple[np.ndarray, np.ndarray]:
-        u2 = u * u
-        u3 = u2 * u
-
-        h00 = 2.0 * u3 - 3.0 * u2 + 1.0
-        h10 = u3 - 2.0 * u2 + u
-        h01 = -2.0 * u3 + 3.0 * u2
-        h11 = u3 - u2
-        xy = h00 * p0 + h10 * m0 + h01 * p1 + h11 * m1
-
-        dh00 = 6.0 * u2 - 6.0 * u
-        dh10 = 3.0 * u2 - 4.0 * u + 1.0
-        dh01 = -6.0 * u2 + 6.0 * u
-        dh11 = 3.0 * u2 - 2.0 * u
-        tangent = dh00 * p0 + dh10 * m0 + dh01 * p1 + dh11 * m1
-        return xy, tangent
 
     def _transform_scene_to_new_ego_frame(
         self, data: dict[str, np.ndarray], perturbation: AugumentedEgoPosition

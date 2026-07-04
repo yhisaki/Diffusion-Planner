@@ -333,6 +333,7 @@ class EgoVelocityPastEncoder(nn.Module):
         super().__init__()
         emb_dim = 64
         self.bool_encoder = BoolSequenceEncoder(time_len, emb_dim, hidden_dim)
+        self.current_velocity_encoder = nn.Linear(2, hidden_dim)
 
     def forward(
         self, ego_velocity_past: torch.Tensor, ego_current_pose: torch.Tensor
@@ -341,7 +342,9 @@ class EgoVelocityPastEncoder(nn.Module):
         Encode ego past moving/stopped sequence as a single context token.
 
         Args:
-            ego_velocity_past: (B, time_len, 2) past ego velocity. Only vx is used.
+            ego_velocity_past: (B, time_len, 2) past ego velocity.
+                The moving/stopped sequence uses vx, and the latest (vx, vy)
+                is added as a continuous velocity encoding.
             ego_current_pose: (B, 4) current ego pose, x, y, cos, sin.
 
         Returns:
@@ -354,7 +357,11 @@ class EgoVelocityPastEncoder(nn.Module):
         velocity_x = ego_velocity_past[:, :, 0]
         velocity_bool = velocity_x.abs() > 1e-3
 
-        encoding = self.bool_encoder(velocity_bool).unsqueeze(1)
+        current_velocity = ego_velocity_past[:, -1, :]
+        encoding = self.bool_encoder(velocity_bool) + self.current_velocity_encoder(
+            current_velocity
+        )
+        encoding = encoding.unsqueeze(1)
         pos = add_class_type(ego_current_pose.clone().unsqueeze(1), CLASS_TYPE_EGO_VELOCITY_PAST)
         mask = torch.zeros((B, 1), dtype=torch.bool, device=ego_velocity_past.device)
         return encoding, mask, pos
