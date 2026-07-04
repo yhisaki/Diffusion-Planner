@@ -22,7 +22,6 @@ from timm.utils import ModelEma
 from torch import optim
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
-from valid_predictor import validate_model
 
 
 def boolean(v):
@@ -45,16 +44,14 @@ def find_upward(start_file: str, target_name: str) -> Path:
     raise FileNotFoundError(f"{target_name} up {directory}")
 
 
-def log_dataset_artifact(run: wandb.sdk.wandb_run.Run, exp_name: str, train_set_list: str, valid_set_list: str) -> None:
+def log_dataset_artifact(run: wandb.sdk.wandb_run.Run, exp_name: str, train_set_list: str) -> None:
     artifact = wandb.Artifact(
         name=f"dataset_{exp_name}",
         type="dataset",
-        metadata={"train_set_list": train_set_list, "valid_set_list": valid_set_list},
+        metadata={"train_set_list": train_set_list},
     )
     train_path = Path(train_set_list)
-    valid_path = Path(valid_set_list)
     artifact.add_file(str(train_path), name=train_path.name)
-    artifact.add_file(str(valid_path), name=valid_path.name)
     summary_csv = find_upward(train_set_list, "summary.csv")
     artifact.add_file(str(summary_csv), name="summary.csv")
     try:
@@ -73,7 +70,6 @@ def get_args():
 
     # Data
     parser.add_argument("--train_set_list", type=str, required=True)
-    parser.add_argument("--valid_set_list", type=str, required=True)
 
     parser.add_argument("--future_len", type=int, default=OUTPUT_T)
     parser.add_argument("--time_len", type=int, default=INPUT_T + 1)
@@ -119,6 +115,12 @@ def get_args():
     parser.add_argument("--train_epochs", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=512)
     parser.add_argument("--save_utd", type=int, default=10)
+    parser.add_argument(
+        "--save_step_interval",
+        type=int,
+        default=100,
+        help="save latest.pth and print loss every N steps within an epoch (0 to disable)",
+    )
     parser.add_argument("--learning_rate", type=float, default=1e-4)
     parser.add_argument("--warm_up_epoch", type=int, default=5)
     parser.add_argument("--encoder_drop_path_rate", type=float, default=0.1)
@@ -204,14 +206,6 @@ def get_args():
     return args
 
 
-def mean_ego_loss(loss_dict):
-    result = {}
-    for key, val in loss_dict.items():
-        if key.startswith("ego_"):
-            result[f"valid_loss/{key}"] = val.mean().item()
-    return result
-
-
 def model_training(args):
     # init ddp
     global_rank, rank, _ = ddp.ddp_setup_universal(True, args)
@@ -266,7 +260,6 @@ def model_training(args):
 
     # prepare dataset
     train_set = DiffusionPlannerData(args.train_set_list)
-    valid_set = DiffusionPlannerData(args.valid_set_list)
 
     train_sampler = DistributedSampler(
         train_set, num_replicas=ddp.get_world_size(), rank=global_rank, shuffle=True
@@ -279,21 +272,6 @@ def model_training(args):
         pin_memory=args.pin_mem,
         drop_last=True,
     )
-
-    # Validation is only performed on rank 0 with full dataset
-    # Other ranks will get a dummy loader (not used)
-    if global_rank == 0:
-        valid_loader = DataLoader(
-            valid_set,
-            batch_size=batch_size // 4,
-            num_workers=args.num_workers,
-            pin_memory=args.pin_mem,
-            drop_last=False,
-            shuffle=False,
-        )
-    else:
-        # Dummy loader for non-main processes (won't be used)
-        valid_loader = None
 
     if global_rank == 0:
         print("Dataset Prepared: {} train data\n".format(len(train_set)))
@@ -360,37 +338,13 @@ def model_training(args):
             dir=f"{save_path}",
         )
         wandb.config.update(args)
-        log_dataset_artifact(wandb.run, args.exp_name, args.train_set_list, args.valid_set_list)
+        log_dataset_artifact(wandb.run, args.exp_name, args.train_set_list)
 
     if args.ddp:
         torch.distributed.barrier()
 
     data_list = []
     best_loss = float("inf")
-
-    if global_rank == 0:
-        valid_dict = validate_model(diffusion_planner, valid_loader, args)
-        valid_loss_ego = valid_dict["avg_loss_ego"]
-        valid_loss_neighbor = valid_dict["avg_loss_neighbor"]
-        mean_ego_loss_dict = mean_ego_loss(valid_dict)
-        valid_loss_ego_position_lat_loss = mean_ego_loss_dict.get(
-            "valid_loss/ego_position_lat_loss", 0.0
-        )
-        valid_loss_ego_position_lon_loss = mean_ego_loss_dict.get(
-            "valid_loss/ego_position_lon_loss", 0.0
-        )
-        turn_indicator_accuracy = valid_dict["turn_indicator_accuracy"]
-        turn_indicator_change_accuracy = valid_dict["turn_indicator_change_accuracy"]
-        turn_indicator_change_total = valid_dict["turn_indicator_change_total"]
-        print(
-            f"{valid_loss_ego=:.3f}\n"
-            f"{valid_loss_neighbor=:.3f}\n"
-            f"{valid_loss_ego_position_lat_loss=:.3f}\n"
-            f"{valid_loss_ego_position_lon_loss=:.3f}\n"
-            f"{turn_indicator_accuracy=:.3f}\n"
-            f"{turn_indicator_change_accuracy=:.3f}\n"
-            f"{turn_indicator_change_total=:.3f}"
-        )
 
     # begin training
     for epoch in range(init_epoch, train_epochs):
@@ -413,32 +367,23 @@ def model_training(args):
 
         # training step
         train_loss, train_total_loss = train_epoch(
-            train_loader, diffusion_planner, optimizer, args, model_ema, aug
+            train_loader,
+            diffusion_planner,
+            optimizer,
+            args,
+            model_ema,
+            aug,
+            scheduler=scheduler,
+            epoch=epoch,
+            save_path=save_path,
+            wandb_id=wandb_id,
+            save_step_interval=args.save_step_interval,
         )
 
         if global_rank == 0:
-            valid_dict = validate_model(diffusion_planner, valid_loader, args)
-            valid_loss_ego = valid_dict["avg_loss_ego"]
-            valid_loss_neighbor = valid_dict["avg_loss_neighbor"]
-            mean_ego_loss_dict = mean_ego_loss(valid_dict)
-            valid_loss_ego_position_lat_loss = mean_ego_loss_dict.get(
-                "valid_loss/ego_position_lat_loss", 0.0
-            )
-            valid_loss_ego_position_lon_loss = mean_ego_loss_dict.get(
-                "valid_loss/ego_position_lon_loss", 0.0
-            )
-            turn_indicator_accuracy = valid_dict["turn_indicator_accuracy"]
-            turn_indicator_change_accuracy = valid_dict["turn_indicator_change_accuracy"]
-            turn_indicator_change_total = valid_dict["turn_indicator_change_total"]
             print(
                 f"Epoch {epoch + 1}/{train_epochs}\n"
-                f"{valid_loss_ego=:.3f}\n"
-                f"{valid_loss_neighbor=:.3f}\n"
-                f"{valid_loss_ego_position_lat_loss=:.3f}\n"
-                f"{valid_loss_ego_position_lon_loss=:.3f}\n"
-                f"{turn_indicator_accuracy=:.3f}\n"
-                f"{turn_indicator_change_accuracy=:.3f}\n"
-                f"{turn_indicator_change_total=:.3f}"
+                f"{train_total_loss=:.3f}"
             )
 
             lr_dict = {"lr": optimizer.param_groups[0]["lr"]}
@@ -446,11 +391,6 @@ def model_training(args):
                 {
                     **{f"train_loss/{k}": v for k, v in train_loss.items()},
                     **{f"lr/{k}": v for k, v in lr_dict.items()},
-                    "valid_loss/ego": valid_loss_ego,
-                    "valid_loss/neighbors": valid_loss_neighbor,
-                    "valid_loss/turn_indicator_accuracy": turn_indicator_accuracy,
-                    "valid_loss/turn_indicator_change_accuracy": turn_indicator_change_accuracy,
-                    **mean_ego_loss_dict,
                 },
                 step=epoch + 1,
             )
@@ -458,10 +398,6 @@ def model_training(args):
             curr_data = {
                 "epoch": epoch + 1,
                 "train_loss": train_total_loss,
-                "valid_loss_ego": valid_loss_ego,
-                "valid_loss_neighbor": valid_loss_neighbor,
-                "valid_loss_ego_position_lat_loss": valid_loss_ego_position_lat_loss,
-                "valid_loss_ego_position_lon_loss": valid_loss_ego_position_lon_loss,
             }
             data_list.append(curr_data)
             df = pd.DataFrame(data_list)
@@ -473,7 +409,7 @@ def model_training(args):
                 "ema_state_dict": model_ema.ema.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "schedule": scheduler.state_dict(),
-                "loss": valid_loss_ego,
+                "loss": train_total_loss,
                 "wandb_id": wandb_id,
             }
             torch.save(model_dict, f"{save_path}/latest.pth")
@@ -487,11 +423,11 @@ def model_training(args):
                 with open(os.path.join(curr_dir, "args.json"), "w", encoding="utf-8") as f:
                     json.dump(args_dict, f, indent=4)
 
-            if valid_loss_ego_position_lat_loss < best_loss:
+            if train_total_loss < best_loss:
                 curr_dir = os.path.join(save_path, "best_model")
                 os.makedirs(curr_dir, exist_ok=True)
                 torch.save(model_dict, f"{curr_dir}/best_model.pth")
-                best_loss = valid_loss_ego_position_lat_loss
+                best_loss = train_total_loss
                 curr_data["best_loss"] = best_loss
                 with open(os.path.join(curr_dir, "best_model_info.json"), "w") as f:
                     json.dump(curr_data, f, indent=4)

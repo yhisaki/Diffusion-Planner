@@ -1,13 +1,11 @@
 #!/bin/bash
 set -ux
 exp_name=${1}
-TRAIN_SET_LIST=${2}
-VALID_SET_LIST=${3}
+TRAIN_SET_LIST="/mnt/storage_rdma/diffusion_planner/dataset/20260425_takanawa_full/path_list_train_concatenated.json"
 MODEL_PATH=${4:-}  # optional: resume from this .pth if given
 
 # to convert full paths
 TRAIN_SET_LIST=$(readlink -f $TRAIN_SET_LIST)
-VALID_SET_LIST=$(readlink -f $VALID_SET_LIST)
 
 cd $(dirname $0)
 
@@ -41,7 +39,6 @@ fi
 python3 -m torch.distributed.run --nnodes 1 --nproc-per-node 8 --standalone train_predictor.py \
 --exp_name ${exp_name} \
 --train_set_list $TRAIN_SET_LIST \
---valid_set_list $VALID_SET_LIST \
 --use_wandb True \
 --diffusion_model_type "x_start" \
 --save_dir ${SAVE_PATH} \
