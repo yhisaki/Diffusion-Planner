@@ -257,7 +257,8 @@ def draw_neighbor_agents(data: dict[str, np.ndarray]) -> list[go.Scatter]:
     """Draw neighbor agent past trajectories, bounding boxes, and future.
 
     Each agent is colour-coded by vehicle type (blue / green / purple).
-    Up to 32 agents are drawn.
+    All valid neighbor slots are drawn (empty/padding slots are skipped),
+    so that every neighbor with a drawn prediction also has a drawn box.
 
     Args:
         data: NPZ data dict (requires ``neighbor_agents_past``).
@@ -273,7 +274,7 @@ def draw_neighbor_agents(data: dict[str, np.ndarray]) -> list[go.Scatter]:
     neighbors = neighbors.reshape(neighbors.shape[0], neighbors.shape[1], -1)
     last_t = neighbors.shape[1] - 1
 
-    for i in range(min(neighbors.shape[0], 32)):
+    for i in range(neighbors.shape[0]):
         neighbor = neighbors[i, last_t]
         if np.sum(np.abs(neighbor[:4])) < 1e-6:
             continue
