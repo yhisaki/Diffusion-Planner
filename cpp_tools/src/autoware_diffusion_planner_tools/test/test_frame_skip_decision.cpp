@@ -44,7 +44,6 @@ FrameSkipInputs make_clear_inputs()
   in.is_red_or_yellow = false;
   in.is_future_forward = true;
   in.stopping_count = 0;
-  in.no_future_progress_x_step = 0;
   return in;
 }
 
@@ -185,18 +184,6 @@ TEST(DecideFrameSkipTest, RouteRedLightWithNonPositiveAccelerationIsKept)
   EXPECT_EQ(info.label, SkippingLabel::NotSkipped);
 }
 
-TEST(DecideFrameSkipTest, GreenLightNoStartSkips)
-{
-  ZeroVectors vecs;
-  vecs.lanes[0] = 1.0f;
-
-  FrameSkipInputs inputs = make_clear_inputs();
-  inputs.green_light_no_start = true;
-
-  const SkippingInfo info = call_decide(inputs, vecs);
-  EXPECT_EQ(info.label, SkippingLabel::GreenLightNoStart);
-}
-
 TEST(DecideFrameSkipTest, StoppedAtTrafficLightAloneIsKept)
 {
   ZeroVectors vecs;
@@ -204,7 +191,6 @@ TEST(DecideFrameSkipTest, StoppedAtTrafficLightAloneIsKept)
 
   FrameSkipInputs inputs = make_clear_inputs();
   inputs.is_stop = true;
-  inputs.is_future_forward = false;
   inputs.is_red_or_yellow = true;
   inputs.stopping_count = INPUT_T + 10;  // > INPUT_T + 5
 
@@ -212,13 +198,13 @@ TEST(DecideFrameSkipTest, StoppedAtTrafficLightAloneIsKept)
   EXPECT_EQ(info.label, SkippingLabel::NotSkipped);
 }
 
-TEST(DecideFrameSkipTest, NoFutureProgressSkip)
+TEST(DecideFrameSkipTest, ShortEgoFuturePathSkips)
 {
   ZeroVectors vecs;
   vecs.lanes[0] = 1.0f;
 
   FrameSkipInputs inputs = make_clear_inputs();
-  inputs.no_future_progress_x_step = 31;  // > kStuckThresholdTicks (30)
+  inputs.is_future_forward = false;  // GT ego future path <= 1 m
 
   const SkippingInfo info = call_decide(inputs, vecs);
   EXPECT_EQ(info.label, SkippingLabel::NoFutureProgress);

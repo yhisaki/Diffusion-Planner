@@ -37,14 +37,6 @@ void ConverterOptions::add_converter_options(CLI::App & app)
     "Distance horizon in meters for ego_agent_future. If less future path is available, "
     "the per-frame sampling interval is reduced to fit the available distance.");
   app.add_option(
-    "--green_light_stop_line_distance_m", green_light_stop_line_distance_m,
-    "Skip frames when the ego front bumper is within this stop-line distance on a green route "
-    "and ego does not start. Use 0 to disable.");
-  app.add_option(
-    "--green_light_no_start_duration_s", green_light_no_start_duration_s,
-    "Future duration in seconds used to detect no-start behavior at a green light. "
-    "Use 0 to disable.");
-  app.add_option(
     "--stopped_future_drop_probability", stopped_future_drop_probability,
     "Deterministic drop probability for frames whose ego_velocity_future is fully stopped.");
   app.add_option(
@@ -113,8 +105,6 @@ ConverterOptions ConverterOptions::default_converter_options()
   options.interpolation = 1;
   options.min_distance = 50.0;
   options.future_distance_horizon_m = 80.0;
-  options.green_light_stop_line_distance_m = 5.0;
-  options.green_light_no_start_duration_s = 0.3;
   options.stopped_future_drop_probability = 0.9;
   options.ego_wheel_base = -1.0f;
   options.ego_length = -1.0f;
@@ -123,7 +113,7 @@ ConverterOptions ConverterOptions::default_converter_options()
   // Collision-free filter defaults match filter_collision_free_npz.py.
   options.static_object_margin = -100.0f;
   options.neighbor_margin = -100.0f;
-  options.road_border_margin = -0.0f;
+  options.road_border_margin = 0.0f;
   options.disable_neighbor_collision = true;
   options.collision_time_stride = 5;
 
@@ -144,12 +134,6 @@ std::optional<std::string> validate_options(const ConverterOptions & opts)
   }
   if (opts.future_distance_horizon_m <= 0.0) {
     return "Future distance horizon must be positive.";
-  }
-  if (opts.green_light_stop_line_distance_m < 0.0) {
-    return "Green-light stop-line distance must be non-negative.";
-  }
-  if (opts.green_light_no_start_duration_s < 0.0) {
-    return "Green-light no-start duration must be non-negative.";
   }
   if (opts.stopped_future_drop_probability < 0.0 || opts.stopped_future_drop_probability > 1.0) {
     return "Stopped future drop probability must be in [0, 1].";

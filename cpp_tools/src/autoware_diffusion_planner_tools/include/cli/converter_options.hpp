@@ -35,8 +35,6 @@ struct ConverterOptions
   int64_t interpolation;
   double min_distance;
   double future_distance_horizon_m;
-  double green_light_stop_line_distance_m;
-  double green_light_no_start_duration_s;
   double stopped_future_drop_probability;
   float ego_wheel_base;
   float ego_length;

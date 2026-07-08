@@ -111,8 +111,6 @@ Both converter commands accept these options:
 | `--min_frames N` | Minimum assembled frames required to accept a sequence | `1700` |
 | `--min_distance M` | Minimum traveled ego distance in meters | `50.0` |
 | `--future_distance_horizon_m M` | Distance horizon for `ego_agent_future`; shorter available futures reduce per-frame interval | `80.0` |
-| `--green_light_stop_line_distance_m M` | Skip green-light no-start frames when the ego front bumper is within this stop-line distance; `0` disables | `5.0` |
-| `--green_light_no_start_duration_s S` | Future duration used to detect no-start behavior at green lights; `0` disables | `0.3` |
 | `--stopped_future_drop_probability P` | Deterministic drop probability for fully stopped `ego_velocity_future` frames | `0.9` |
 | `--search_nearest_route 0/1` | Use the latest route at or before each frame timestamp | `1` |
 | `--convert_yellow 0/1` | Deprecated compatibility option; legacy red/yellow stopped-frame skip is disabled | `0` |

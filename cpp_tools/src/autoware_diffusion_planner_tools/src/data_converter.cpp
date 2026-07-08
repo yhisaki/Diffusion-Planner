@@ -33,7 +33,6 @@ void print_options(const ConverterPaths & paths, const ConverterOptions & conver
     "Vector map: {}\n"
     "Save directory: {}\n"
     "Step: {}, Limit: {}, Min frames: {}, Min distance: {}, Future distance horizon: {}, "
-    "Green-light stop-line distance: {}, Green-light no-start duration: {}, "
     "Stopped future drop probability: {}, "
     "Search nearest route: {}, Deprecated convert yellow: {}, Deprecated convert red: {}, "
     "Interpolation: {}\n"
@@ -44,7 +43,6 @@ void print_options(const ConverterPaths & paths, const ConverterOptions & conver
     converter.ego_wheel_base, converter.ego_length, converter.ego_width, paths.rosbag_path,
     paths.vector_map_path, paths.save_dir, converter.step, converter.limit, converter.min_frames,
     converter.min_distance, converter.future_distance_horizon_m,
-    converter.green_light_stop_line_distance_m, converter.green_light_no_start_duration_s,
     converter.stopped_future_drop_probability, converter.search_nearest_route,
     converter.convert_yellow, converter.convert_red, converter.use_interpolation,
     converter.static_object_margin, converter.neighbor_margin, converter.road_border_margin,

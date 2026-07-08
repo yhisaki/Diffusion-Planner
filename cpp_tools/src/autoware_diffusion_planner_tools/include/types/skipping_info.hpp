@@ -85,15 +85,15 @@ enum class SkippingLabel {
   OffLane,    // GT ego trajectory is too far from any lane centerline
 
   // Sustained-state skipping reasons
-  NoFutureProgress,  // GT future trajectory has not advanced for >=3s (ego stuck beyond
-                     // just red lights, e.g. stop sign / behind another vehicle / parked).
+  NoFutureProgress,  // GT ego future path length is <= 1 m (no meaningful future motion).
 
   // NOTE: append new labels below to keep the integer values of the labels above stable
   // (they are written verbatim into the per-frame JSON and read back by analysis scripts).
   AcceleratingAtTrafficLight,  // Current/future ego acceleration is positive while route contains
                                // a red traffic light.
-  GreenLightNoStart,  // Ego is near a green-light stop line with no front vehicle but does not
-                      // start within the configured future duration.
+  GreenLightNoStart,  // RETIRED: the green-light no-start filter was removed. This enumerator is
+                      // kept (never emitted) only to preserve the integer values below for
+                      // historical per-frame JSON read back by analysis scripts.
   StoppedFutureDownsampled,  // ego_velocity_future is fully stopped and selected by deterministic
                              // probability downsampling.
 };
@@ -175,15 +175,6 @@ struct SkippingInfo
       {}};
   }
 
-  static SkippingInfo green_light_no_start()
-  {
-    return {
-      SkippingLabel::GreenLightNoStart,
-      "No start near green-light stop line with no front vehicle",
-      {},
-      {}};
-  }
-
   static SkippingInfo stopped_future_downsampled()
   {
     return {SkippingLabel::StoppedFutureDownsampled, "Stopped future downsampled", {}, {}};
@@ -231,14 +222,9 @@ struct SkippingInfo
       {IncompleteDataType::KinematicState}};
   }
 
-  static SkippingInfo no_future_progress(double sustained_seconds)
+  static SkippingInfo no_future_progress()
   {
-    return {
-      SkippingLabel::NoFutureProgress,
-      "GT future has not advanced for " + std::to_string(sustained_seconds) +
-        "s (ego stuck beyond red lights)",
-      {},
-      {}};
+    return {SkippingLabel::NoFutureProgress, "GT ego future path is <= 1 m", {}, {}};
   }
 };
 

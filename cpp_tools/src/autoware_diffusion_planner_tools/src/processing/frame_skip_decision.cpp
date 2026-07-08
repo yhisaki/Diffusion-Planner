@@ -27,9 +27,6 @@ namespace frame_processor
 namespace
 {
 constexpr int64_t kStaleThresholdNs = 500'000'000LL;  // 500 ms
-// Skip frames where GT future has not advanced for >=3 s (ego stuck beyond red lights).
-// At 10 Hz with step=1 this is 30 ticks; the caller passes no_future_progress_count * step.
-constexpr int64_t kStuckThresholdTicks = 30;
 }  // namespace
 
 SkippingInfo decide_frame_skip(
@@ -51,13 +48,9 @@ SkippingInfo decide_frame_skip(
     return SkippingInfo::accelerating_at_traffic_light();
   }
 
-  if (inputs.green_light_no_start) {
-    return SkippingInfo::green_light_no_start();
-  }
-
-  if (inputs.no_future_progress_x_step > kStuckThresholdTicks) {
-    const double sustained_s = static_cast<double>(inputs.no_future_progress_x_step) / 10.0;
-    return SkippingInfo::no_future_progress(sustained_s);
+  // Skip frames whose GT ego future path is <= 1 m (is_future_forward is sum_mileage > 1 m).
+  if (!inputs.is_future_forward) {
+    return SkippingInfo::no_future_progress();
   }
 
   if (

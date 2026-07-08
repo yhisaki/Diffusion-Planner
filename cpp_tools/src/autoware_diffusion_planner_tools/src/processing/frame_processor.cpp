@@ -50,8 +50,6 @@ namespace
 {
 
 constexpr double kVelocityTransitionThreshold = 1.0e-4;
-constexpr double kStartVelocityThresholdMps = 0.1;
-constexpr double kFrontVehicleLateralThresholdM = 3.0;
 constexpr double kFullyStoppedVelocityThresholdMps = 1.0e-3;
 
 bool is_near_zero_velocity(const FrameData & frame)
@@ -90,81 +88,6 @@ std::vector<int64_t> create_processing_indices(
   return indices;
 }
 
-std::optional<double> nearest_forward_stop_line_distance(const std::vector<float> & line_strings)
-{
-  using autoware::diffusion_planner::LINE_STRING_TYPE_NUM;
-  using autoware::diffusion_planner::LINE_STRING_TYPE_STOP_LINE;
-  using autoware::diffusion_planner::NUM_LINE_STRINGS;
-  using autoware::diffusion_planner::POINTS_PER_LINE_STRING;
-
-  const int64_t dim = 2 + LINE_STRING_TYPE_NUM;
-  const int64_t stop_line_idx = 2 + LINE_STRING_TYPE_STOP_LINE;
-  double nearest = std::numeric_limits<double>::infinity();
-  for (int64_t n = 0; n < NUM_LINE_STRINGS; ++n) {
-    const float * base = &line_strings[n * POINTS_PER_LINE_STRING * dim];
-    for (int64_t p = 0; p < POINTS_PER_LINE_STRING; ++p) {
-      if (base[p * dim + stop_line_idx] <= 0.5f) {
-        continue;
-      }
-      const double x = base[p * dim + 0];
-      const double y = base[p * dim + 1];
-      if (x > 0.0) {
-        nearest = std::min(nearest, std::hypot(x, y));
-      }
-    }
-  }
-  if (!std::isfinite(nearest)) {
-    return std::nullopt;
-  }
-  return nearest;
-}
-
-double base_link_to_front_bumper_distance(const ConverterOptions & options)
-{
-  return 0.5 * static_cast<double>(options.ego_wheel_base + options.ego_length);
-}
-
-bool has_front_vehicle_before_stop_line(
-  const std::vector<float> & neighbor_past, const double stop_line_distance_m)
-{
-  using autoware::diffusion_planner::INPUT_T;
-  using autoware::diffusion_planner::MAX_NUM_NEIGHBORS;
-  constexpr int64_t np_dim = 11;
-  const int64_t past = INPUT_T + 1;
-  const int64_t last = past - 1;
-
-  for (int64_t n = 0; n < MAX_NUM_NEIGHBORS; ++n) {
-    const float * p = &neighbor_past[(n * past + last) * np_dim];
-    const double x = p[0];
-    const double y = p[1];
-    if (std::fabs(p[0]) + std::fabs(p[1]) + std::fabs(p[2]) + std::fabs(p[3]) <= 1e-6) {
-      continue;
-    }
-    if (x > 0.0 && x < stop_line_distance_m && std::fabs(y) < kFrontVehicleLateralThresholdM) {
-      return true;
-    }
-  }
-  return false;
-}
-
-bool ego_starts_within_duration(
-  const std::vector<float> & ego_velocity_future, const double duration_s)
-{
-  using autoware::diffusion_planner::OUTPUT_T;
-  if (duration_s <= 0.0) {
-    return false;
-  }
-  const int64_t steps = std::min<int64_t>(
-    OUTPUT_T, static_cast<int64_t>(std::ceil(
-                duration_s / autoware::diffusion_planner::constants::PREDICTION_TIME_STEP_S)));
-  for (int64_t t = 0; t < steps; ++t) {
-    if (ego_velocity_future[t * 2] > kStartVelocityThresholdMps) {
-      return true;
-    }
-  }
-  return false;
-}
-
 bool is_ego_velocity_future_fully_stopped(const std::vector<float> & ego_velocity_future)
 {
   return std::all_of(ego_velocity_future.begin(), ego_velocity_future.end(), [](const float v) {
@@ -201,7 +124,6 @@ void process_sequence(
   using autoware::diffusion_planner::POINTS_PER_SEGMENT;
   using autoware::diffusion_planner::SEGMENT_POINT_DIM;
   using autoware::diffusion_planner::STATIC_OBJECTS_SHAPE;
-  using autoware::diffusion_planner::TRAFFIC_LIGHT_GREEN;
   using autoware::diffusion_planner::TRAFFIC_LIGHT_RED;
   namespace constants = autoware::diffusion_planner::constants;
   namespace preprocess = autoware::diffusion_planner::preprocess;
@@ -257,9 +179,6 @@ void process_sequence(
 
   // Process frames with stopping count tracking
   int64_t stopping_count = 0;
-  // Skip frames where the GT future has not advanced for >=3s (ego stuck / stationary
-  // beyond just red lights). Tracks consecutive iterations with !is_future_forward.
-  int64_t no_future_progress_count = 0;
   const std::vector<int64_t> processing_indices =
     create_processing_indices(seq.data_list, INPUT_T_WITH_CURRENT, options.step);
   for (const int64_t i : processing_indices) {
@@ -379,25 +298,16 @@ void process_sequence(
         (route_lanes_speed_limit[idx] > std::numeric_limits<float>::epsilon()) ? 1 : 0;
     }
     bool route_has_red_light = false;
-    bool route_has_green_light = false;
-    for (int64_t segment_idx = 0; segment_idx < NUM_SEGMENTS_IN_ROUTE; ++segment_idx) {
+    for (int64_t segment_idx = 0; segment_idx < NUM_SEGMENTS_IN_ROUTE && !route_has_red_light;
+         ++segment_idx) {
       for (int64_t point_idx = 0; point_idx < POINTS_PER_SEGMENT; ++point_idx) {
         const int64_t base_index =
           segment_idx * POINTS_PER_SEGMENT * SEGMENT_POINT_DIM + point_idx * SEGMENT_POINT_DIM;
         const int64_t red_light_index = base_index + TRAFFIC_LIGHT_RED;
-        const int64_t green_light_index = base_index + TRAFFIC_LIGHT_GREEN;
         if (route_lanes[red_light_index] > 0.5f) {
           route_has_red_light = true;
-        }
-        if (route_lanes[green_light_index] > 0.5f) {
-          route_has_green_light = true;
-        }
-        if (route_has_red_light && route_has_green_light) {
           break;
         }
-      }
-      if (route_has_red_light && route_has_green_light) {
-        break;
       }
     }
 
@@ -405,25 +315,6 @@ void process_sequence(
       lane_segment_context.create_polygon_tensor(map2bl, center_x, center_y);
     const std::vector<float> line_strings =
       lane_segment_context.create_line_string_tensor(map2bl, center_x, center_y);
-    const std::optional<double> base_link_stop_line_distance_m =
-      nearest_forward_stop_line_distance(line_strings);
-    const std::optional<double> front_bumper_stop_line_distance_m =
-      base_link_stop_line_distance_m.has_value()
-        ? std::make_optional(
-            std::max(
-              0.0,
-              base_link_stop_line_distance_m.value() - base_link_to_front_bumper_distance(options)))
-        : std::nullopt;
-    const bool ego_already_started =
-      seq.data_list[i].kinematic_state.twist.twist.linear.x > kStartVelocityThresholdMps;
-    const bool green_light_no_start =
-      options.green_light_stop_line_distance_m > 0.0 &&
-      options.green_light_no_start_duration_s > 0.0 && route_has_green_light &&
-      front_bumper_stop_line_distance_m.has_value() &&
-      front_bumper_stop_line_distance_m.value() <= options.green_light_stop_line_distance_m &&
-      !has_front_vehicle_before_stop_line(neighbor_past, base_link_stop_line_distance_m.value()) &&
-      !ego_already_started &&
-      !ego_starts_within_duration(ego_velocity_future, options.green_light_no_start_duration_s);
 
     // Get goal pose
     const geometry_msgs::msg::Pose & goal_pose = seq.route.goal_pose;
@@ -462,11 +353,6 @@ void process_sequence(
       sum_mileage += std::sqrt(dx * dx + dy * dy);
     }
     const bool is_future_forward = sum_mileage > 1.0;
-    if (!is_future_forward) {
-      no_future_progress_count++;
-    } else {
-      no_future_progress_count = 0;
-    }
 
     // Create placeholder data for static objects
     const std::vector<float> static_objects(
@@ -488,10 +374,8 @@ void process_sequence(
       false,
       route_has_red_light,
       max_future_longitudinal_acceleration,
-      green_light_no_start,
       is_future_forward,
-      stopping_count,
-      no_future_progress_count * options.step};
+      stopping_count};
 
     const frame_processor::FrameFilterParams filter_params{
       options.static_object_margin,       options.neighbor_margin,       options.road_border_margin,
@@ -525,9 +409,5 @@ void process_sequence(
     save_frame_json(
       paths.save_dir, rosbag_dir_name, token, seq.data_list[i].kinematic_state,
       seq.data_list[i].timestamp, skipping_info);
-
-    if (i % 100 == 0) {
-      std::cout << "Processed frame " << i << "/" << n << std::endl;
-    }
   }
 }

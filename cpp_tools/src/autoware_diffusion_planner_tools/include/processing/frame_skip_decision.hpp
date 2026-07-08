@@ -35,10 +35,8 @@ struct FrameSkipInputs
   bool is_red_or_yellow;     // Deprecated: traffic-light skips are disabled.
   bool route_has_red_light;  // route tensor contains at least one red-light point
   double max_future_longitudinal_acceleration;  // max future ego acceleration x [m/s^2]
-  bool green_light_no_start;          // green route, near stop line, no front car, no start
   bool is_future_forward;             // GT future mileage > 1.0 m
   int64_t stopping_count;             // consecutive ticks ego has been stopped
-  int64_t no_future_progress_x_step;  // no_future_progress_count * step (scaled ticks)
 };
 
 // Filter thresholds forwarded from ConverterOptions.
