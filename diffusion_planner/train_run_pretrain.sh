@@ -1,7 +1,7 @@
 #!/bin/bash
 set -ux
 exp_name=${1}
-TRAIN_SET_LIST=${2:-/mnt/nvme/dataset/hisaki/future_path/path_list_train.json}
+TRAIN_SET_LIST=${2:-/mnt/nvme/dataset/hisaki/future_path_v2/path_list_train.json}
 DEBUG=${3:-False}
 
 # to convert full paths
@@ -46,9 +46,8 @@ fi
 --use_wandb False \
 --save_dir ${SAVE_PATH} \
 --train_epochs 80 \
---batch_size 480 \
+--batch_size 720 \
 --find_unused_parameters False \
 --compile_model True \
 --use_amp True \
---resume_model_path "/home/hisaki/Diffusion-Planner/diffusion_planner/training_result/20260627-021014_new_v9/latest.pth" \
 2>&1 | tee ${SAVE_PATH}/train_log.txt

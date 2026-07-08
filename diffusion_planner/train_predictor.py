@@ -3,7 +3,6 @@ import json
 import os
 
 import torch
-import wandb
 from diffusion_planner.dimensions import *
 from diffusion_planner.model.diffusion_planner import Diffusion_Planner
 from diffusion_planner.train_epoch import train_epoch
@@ -12,6 +11,8 @@ from diffusion_planner.utils.data_augmentation import StatePerturbation
 from diffusion_planner.utils.dataset import DiffusionPlannerData
 from diffusion_planner.utils.normalizer import ObservationNormalizer, StateNormalizer
 from diffusion_planner.utils.train_utils import (
+    build_optimizer,
+    compute_weight_decay_norms,
     get_model,
     get_model_state_dict,
     resume_encoder_model,
@@ -19,9 +20,10 @@ from diffusion_planner.utils.train_utils import (
     set_seed,
 )
 from timm.utils import ModelEma
-from torch import optim
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
+
+import wandb
 
 
 def boolean(v):
@@ -79,6 +81,19 @@ def get_args():
     parser.add_argument("--batch_size", type=int, default=512)
     parser.add_argument("--learning_rate", type=float, default=1e-4)
     parser.add_argument("--warmup_steps", type=int, default=1000)
+    parser.add_argument(
+        "--lr_min_ratio",
+        type=float,
+        default=1e-6,
+        help="Final learning rate as a fraction of the base LR at the end of cosine decay.",
+    )
+    parser.add_argument(
+        "--weight_decay",
+        type=float,
+        default=0.01,
+        help="Weight decay applied to matrix-like weights only "
+        "(biases, norms, embeddings and positional parameters are excluded).",
+    )
     parser.add_argument("--encoder_drop_path_rate", type=float, default=0.1)
     parser.add_argument("--decoder_drop_path_rate", type=float, default=0.1)
     parser.add_argument(
@@ -89,15 +104,15 @@ def get_args():
     )
     parser.add_argument("--use_turn_indicators", type=boolean, default=True)
 
-    parser.add_argument("--coeff_pos_ego", type=float, default=10.0)
-    parser.add_argument("--coeff_pos_neighbor", type=float, default=10.0)
+    parser.add_argument("--coeff_pos_ego", type=float, default=1.0)
+    parser.add_argument("--coeff_pos_neighbor", type=float, default=1.0)
     parser.add_argument("--coeff_heading_ego", type=float, default=1.0)
     parser.add_argument("--coeff_heading_neighbor", type=float, default=1.0)
 
     parser.add_argument("--alpha_planning_loss", type=float, default=1.0)
     parser.add_argument("--alpha_neighbor_loss", type=float, default=0.1)
-    parser.add_argument("--alpha_speed_loss", type=float, default=0.1)
-    parser.add_argument("--alpha_stop_loss", type=float, default=1.0)
+    parser.add_argument("--alpha_speed_loss", type=float, default=1.0)
+    parser.add_argument("--alpha_stop_loss", type=float, default=10.0)
     parser.add_argument("--stop_transition_loss_weight", type=float, default=5.0)
 
     parser.add_argument("--device", type=str, help="run on which device", default="cuda")
@@ -105,10 +120,10 @@ def get_args():
     parser.add_argument("--use_ema", default=True, type=boolean)
 
     # Model
-    parser.add_argument("--encoder_mixer_depth", type=int, default=3)
-    parser.add_argument("--encoder_fusion_depth", type=int, default=3)
+    parser.add_argument("--encoder_mixer_depth", type=int, default=6)
+    parser.add_argument("--encoder_fusion_depth", type=int, default=6)
     parser.add_argument("--decoder_depth", type=int, help="number of decoding layers", default=3)
-    parser.add_argument("--speed_predictor_depth", type=int, default=3)
+    parser.add_argument("--speed_predictor_depth", type=int, default=6)
     parser.add_argument("--num_heads", type=int, help="number of multi-head", default=8)
     parser.add_argument("--hidden_dim", type=int, help="hidden dimension", default=256)
     parser.add_argument("--predicted_neighbor_num", type=int, default=MAX_NUM_NEIGHBORS)
@@ -258,30 +273,15 @@ def model_training(args):
                 parameter.requires_grad_(False)
             print("Encoder frozen. Training decoder and other non-encoder parameters.")
 
-    trainable_parameters = [p for p in diffusion_planner.parameters() if p.requires_grad]
-    if not trainable_parameters:
-        raise RuntimeError("No trainable parameters found")
-
-    optimizer = optim.AdamW(
-        [
-            {
-                "params": trainable_parameters,
-                "lr": args.learning_rate,
-            }
-        ]
-    )
-
-    if args.warmup_steps < 0:
-        raise ValueError("warmup_steps must be non-negative")
-
-    def lr_lambda(step):
-        if step < args.warmup_steps:
-            return step / args.warmup_steps
-        return 1.0
-
-    scheduler = torch.optim.lr_scheduler.LambdaLR(
-        optimizer,
-        lr_lambda=lr_lambda,
+    # The scheduler steps once per optimizer update (per batch, see train_epoch).
+    total_steps = train_epochs * len(train_loader)
+    optimizer, scheduler = build_optimizer(
+        diffusion_planner,
+        learning_rate=args.learning_rate,
+        total_steps=total_steps,
+        warmup_steps=args.warmup_steps,
+        lr_min_ratio=args.lr_min_ratio,
+        weight_decay=args.weight_decay,
     )
 
     if args.use_ema:
@@ -301,6 +301,16 @@ def model_training(args):
             model_ema,
             args.device,
         )
+
+        # overwrite the learning rate in the optimizer with the one specified in the arguments
+        # overwrite optimizer lr
+        for param_group in optimizer.param_groups:
+            param_group["lr"] = args.learning_rate
+            param_group["initial_lr"] = args.learning_rate
+
+        # overwrite scheduler base lr if available
+        if scheduler is not None and hasattr(scheduler, "base_lrs"):
+            scheduler.base_lrs = [args.learning_rate for _ in scheduler.base_lrs]
 
         if args.freeze_encoder:
             for parameter in diffusion_planner.encoder.parameters():
@@ -364,9 +374,11 @@ def model_training(args):
         )
 
         if global_rank == 0:
+            param_norms = compute_weight_decay_norms(get_model(diffusion_planner))
             wandb.log(
                 {
                     **{f"train/{key}": value for key, value in train_loss.items()},
+                    **{f"param_norm/{key}": value for key, value in param_norms.items()},
                     "lr": optimizer.param_groups[0]["lr"],
                 },
                 step=epoch + 1,

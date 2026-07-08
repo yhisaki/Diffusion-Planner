@@ -102,28 +102,29 @@ def train_epoch(
             elapsed_sec = time.perf_counter() - log_start_time
             log_start_time = time.perf_counter()
             recent_losses = epoch_loss[-log_interval:]
-            avg_loss = sum(l["loss"].item() for l in recent_losses) / len(recent_losses)
-            avg_ego_pos = sum(l["ego_position_loss"].item() for l in recent_losses) / len(
-                recent_losses
+
+            def _avg(key):
+                return sum(l[key].item() for l in recent_losses) / len(recent_losses)
+
+            # Coefficients applied to each leaf loss so that the printed
+            # components sum up to the total loss (see compute_training_loss).
+            alpha_stop = getattr(args, "alpha_stop_loss", 1.0)
+            avg_loss = _avg("loss")
+            avg_ego_pos = args.alpha_planning_loss * args.coeff_pos_ego * _avg("ego_position_loss")
+            avg_ego_heading = (
+                args.alpha_planning_loss * args.coeff_heading_ego * _avg("ego_heading_loss")
             )
-            avg_ego_heading = sum(l["ego_heading_loss"].item() for l in recent_losses) / len(
-                recent_losses
+            avg_neighbor_pos = (
+                args.alpha_neighbor_loss * args.coeff_pos_neighbor * _avg("neighbor_position_loss")
             )
-            avg_neighbor_pos = sum(l["neighbor_position_loss"].item() for l in recent_losses) / len(
-                recent_losses
+            avg_neighbor_heading = (
+                args.alpha_neighbor_loss
+                * args.coeff_heading_neighbor
+                * _avg("neighbor_heading_loss")
             )
-            avg_neighbor_heading = sum(
-                l["neighbor_heading_loss"].item() for l in recent_losses
-            ) / len(recent_losses)
-            avg_turn_indicator = sum(l["turn_indicator_loss"].item() for l in recent_losses) / len(
-                recent_losses
-            )
-            avg_speed = sum(l["ego_velocity_future_loss"].item() for l in recent_losses) / len(
-                recent_losses
-            )
-            avg_stop = sum(l["ego_stop_future_loss"].item() for l in recent_losses) / len(
-                recent_losses
-            )
+            avg_turn_indicator = _avg("turn_indicator_loss")
+            avg_speed = args.alpha_speed_loss * _avg("ego_velocity_future_loss")
+            avg_stop = args.alpha_speed_loss * alpha_stop * _avg("ego_stop_future_loss")
             lr = optimizer.param_groups[0]["lr"]
             print(
                 f"  Batch {batch_idx + 1}/{len(data_loader)} | "
