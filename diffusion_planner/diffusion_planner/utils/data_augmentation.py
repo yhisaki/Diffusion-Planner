@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from diffusion_planner.dimensions import TURN_INDICATOR_OUTPUT_DISABLE
+
 
 def _wrap_angle(angle: np.ndarray | float) -> np.ndarray | float:
     return (angle + np.pi) % (2.0 * np.pi) - np.pi
@@ -27,6 +29,7 @@ class StatePerturbationConfig:
     lat_range: float
     yaw_range: float
     velocity_scale_range: float
+    turn_indicator_onset_prob: float
 
 
 class StatePerturbation:
@@ -44,6 +47,7 @@ class StatePerturbation:
         lat_range: float = 1.0,
         yaw_range: float = 0.2,
         velocity_scale_range: float = 0.6,
+        turn_indicator_onset_prob: float = 0.0,
     ) -> None:
         self.config = StatePerturbationConfig(
             path_augment_prob=path_augment_prob,
@@ -51,6 +55,7 @@ class StatePerturbation:
             lat_range=lat_range,
             yaw_range=yaw_range,
             velocity_scale_range=velocity_scale_range,
+            turn_indicator_onset_prob=turn_indicator_onset_prob,
         )
 
     def augment(self, data: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
@@ -71,7 +76,27 @@ class StatePerturbation:
 
         if np.random.random() <= self.config.velocity_augment_prob:
             self._augument_velocity_past(augmented)
+
+        if np.random.random() <= self.config.turn_indicator_onset_prob:
+            self._augment_turn_indicator_onset(augmented)
         return augmented
+
+    @staticmethod
+    def _augment_turn_indicator_onset(data: dict[str, np.ndarray]) -> None:
+        """Turn a steady turn-signal sample into a signal *onset* sample.
+
+        Overwrites the whole turn indicator history with straight (DISABLE)
+        *except the current step* (index -1). The encoder, which reads index -2,
+        therefore sees a straight signal, while ``make_turn_indicator_gt``
+        (comparing indices -2 and -1) now sees a change and yields the current
+        turn class instead of KEEP. This teaches the planner to emit a turn
+        signal from the trajectory even when the recent signal was straight
+        (e.g. left turn + currently left -> input straight, GT left, not keep).
+        """
+        turn_indicators = data.get("turn_indicators")
+        if turn_indicators is None:
+            return
+        turn_indicators[:-1] = TURN_INDICATOR_OUTPUT_DISABLE
 
     def _add_original_gt_in_augmented_frame(
         self,

@@ -3,6 +3,7 @@ import json
 import os
 
 import torch
+import wandb
 from diffusion_planner.dimensions import *
 from diffusion_planner.model.diffusion_planner import Diffusion_Planner
 from diffusion_planner.train_epoch import train_epoch
@@ -22,8 +23,6 @@ from diffusion_planner.utils.train_utils import (
 from timm.utils import ModelEma
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
-
-import wandb
 
 
 def boolean(v):
@@ -69,6 +68,16 @@ def get_args():
 
     # DataLoader parameters
     parser.add_argument("--augment_prob", type=float, help="augmentation probability", default=0.5)
+    parser.add_argument(
+        "--turn_indicator_onset_prob",
+        type=float,
+        default=0.8,
+        help=(
+            "probability of converting a sample into a turn-signal onset: overwrite the "
+            "turn indicator history with straight except the current step, so the encoder "
+            "input is straight while the GT becomes the current turn class (not KEEP)"
+        ),
+    )
     parser.add_argument("--normalization_file_path", default="normalization.json", type=str)
     parser.add_argument("--num_workers", default=8, type=int)
     parser.add_argument("--pin-mem", action="store_true", help="Pin CPU memory in DataLoader")
@@ -102,8 +111,6 @@ def get_args():
         default=0.5,
         help="probability of dropping the ego velocity token during training",
     )
-    parser.add_argument("--use_turn_indicators", type=boolean, default=True)
-
     parser.add_argument("--coeff_pos_ego", type=float, default=1.0)
     parser.add_argument("--coeff_pos_neighbor", type=float, default=1.0)
     parser.add_argument("--coeff_heading_ego", type=float, default=1.0)
@@ -230,7 +237,11 @@ def model_training(args):
     train_epochs = args.train_epochs
     batch_size = args.batch_size
 
-    aug = StatePerturbation(path_augment_prob=args.augment_prob, velocity_augment_prob=1.0)
+    aug = StatePerturbation(
+        path_augment_prob=args.augment_prob,
+        velocity_augment_prob=1.0,
+        turn_indicator_onset_prob=args.turn_indicator_onset_prob,
+    )
 
     # prepare dataset
     train_set = DiffusionPlannerData(args.train_set_list, data_augmentation=aug)

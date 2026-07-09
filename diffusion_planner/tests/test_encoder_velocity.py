@@ -13,7 +13,6 @@ def _encoder_config(velocity_dropout_ratio: float = 0.0) -> SimpleNamespace:
         encoder_mixer_depth=1,
         encoder_neighbor_attention_depth=1,
         encoder_fusion_depth=1,
-        use_turn_indicators=True,
         velocity_dropout_ratio=velocity_dropout_ratio,
         time_len=2,
         agent_num=1,

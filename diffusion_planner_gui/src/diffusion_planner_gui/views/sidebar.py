@@ -145,9 +145,9 @@ def _on_augment_current_sample() -> bool:
     try:
         npz_path = st.session_state.npz_paths[st.session_state.current_index]
         data = load_npz(npz_path)
-        augmented = StatePerturbation(path_augment_prob=1.0, velocity_augment_prob=1.0).augment(
-            data
-        )
+        augmented = StatePerturbation(
+            path_augment_prob=1.0, velocity_augment_prob=1.0, turn_indicator_onset_prob=1.0
+        ).augment(data)
     except Exception as e:
         st.session_state.augmentation_error = f"Failed to augment current sample: {e}"
         _invalidate_augmented_data()

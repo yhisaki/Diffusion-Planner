@@ -58,8 +58,6 @@ class Encoder(nn.Module):
 
         self.hidden_dim = config.hidden_dim
 
-        self.use_turn_indicators = config.use_turn_indicators
-
         self.token_num = (
             1  # Ego velocity/past token
             + config.agent_num
@@ -129,8 +127,9 @@ class Encoder(nn.Module):
             hidden_dim=config.hidden_dim,
             class_type=CLASS_TYPE_EGO_SHAPE,
         )
-        self.turn_indicator_encoder = VectorEncoder(
-            num_float=INPUT_T,
+        self.turn_indicator_encoder = TurnIndicatorEncoder(
+            # Input enum classes: NONE(0), DISABLE(1), ENABLE_LEFT(2), ENABLE_RIGHT(3).
+            num_classes=TURN_INDICATOR_OUTPUT_ENABLE_RIGHT + 1,
             hidden_dim=config.hidden_dim,
             class_type=CLASS_TYPE_TURN_INDICATOR,
         )
@@ -210,10 +209,12 @@ class Encoder(nn.Module):
         ego_current_pose = inputs["ego_current_state"][:, :4]  # (B, 4) x, y, cos, sin
 
         # turn indicator
-        turn_indicator = inputs["turn_indicators"][:, :-1]  # (B, T)
-        turn_indicator = turn_indicator.float()
-        if not self.use_turn_indicators:
-            turn_indicator = torch.zeros_like(turn_indicator)
+        # Use only the current indicator value instead of the full history.
+        # Index -1 (the current frame) is withheld to avoid leaking the turn
+        # indicator head's GT (derived from indices -2 and -1), so -2 is the most
+        # recent value the encoder may observe. The value is a class index fed to
+        # TurnIndicatorEncoder's embedding.
+        turn_indicator = inputs["turn_indicators"][:, -2:-1].long()  # (B, 1)
 
         B = neighbors.shape[0]
 
@@ -864,6 +865,55 @@ class VectorEncoder(nn.Module):
         x = x * (~mask).unsqueeze(-1).to(dtype=x.dtype)
 
         return x, mask, pos
+
+
+class TurnIndicatorEncoder(nn.Module):
+    """Encode the current turn indicator class as one context token.
+
+    Unlike ``VectorEncoder`` (which treats its input as continuous floats and
+    projects them with an MLP), this encoder simply looks up a learnable
+    embedding for the current turn indicator class, so only a single categorical
+    value is consumed.
+    """
+
+    def __init__(self, num_classes: int, hidden_dim: int, class_type: int) -> None:
+        super().__init__()
+        self._hidden_dim = hidden_dim
+        self._class_type = class_type
+        self.embedding = nn.Embedding(num_classes, hidden_dim)
+
+    def forward(self, x: torch.Tensor) -> EncoderOutput:
+        """
+        Encode a turn indicator class index as one required context token.
+
+        Args:
+            x: Turn indicator class indices, shape (B,) or (B, 1) (integer).
+
+        Returns:
+            encoding: (B, 1, hidden_dim)
+            mask: (B, 1), all False (required token).
+            pos: (B, 1, 4 + CLASS_TYPE_NUM). Neutral pose at the origin.
+        """
+        idx = x.reshape(x.shape[0]).long()  # (B,)
+        B = idx.shape[0]
+        dtype = self.embedding.weight.dtype
+
+        pos = torch.cat(
+            [
+                torch.zeros((B, 2), device=idx.device, dtype=dtype),
+                torch.ones((B, 1), device=idx.device, dtype=dtype),
+                torch.zeros((B, 1), device=idx.device, dtype=dtype),
+            ],
+            dim=-1,
+        )
+        pos = pos.unsqueeze(1)  # (B, 1, 4)
+        pos = add_class_type(pos, self._class_type)
+
+        mask = torch.zeros((B, 1), dtype=torch.bool, device=idx.device)
+
+        encoding = self.embedding(idx).unsqueeze(1)  # (B, 1, hidden_dim)
+
+        return encoding, mask, pos
 
 
 class FusionBlock(nn.Module):
