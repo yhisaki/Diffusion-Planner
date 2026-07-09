@@ -14,6 +14,7 @@ from diffusion_planner_gui.visualization import (
     plot_tcos,
     plot_trajectory,
     plot_tsin,
+    plot_turn_indicator,
     plot_tv,
     plot_tx,
     plot_ty,
@@ -41,13 +42,13 @@ def _npz_bytes(data: dict[str, np.ndarray]) -> bytes:
 
 def _predict_current_sample(
     npz_path, data: dict[str, np.ndarray], is_augmented: bool, model_loaded: bool
-) -> tuple[np.ndarray | None, np.ndarray | None]:
+) -> tuple[np.ndarray | None, np.ndarray | None, int | None]:
     """Run the loaded model on the current sample, if any model is loaded."""
     if not model_loaded:
-        return None, None
+        return None, None, None
     predictor = get_predictor(st.session_state.model_path, "auto")
     if predictor is None:
-        return None, None
+        return None, None, None
     return predictor.predict_with_velocity(
         npz_path=None if is_augmented else npz_path,
         data=data if is_augmented else None,
@@ -60,6 +61,7 @@ def _render_trajectory_and_timeseries(
     data: dict[str, np.ndarray],
     prediction: np.ndarray | None,
     ego_velocity_prediction: np.ndarray | None,
+    turn_indicator_prediction: int | None = None,
 ) -> None:
     view_range = 40
     gt_interval = st.session_state.footprint_interval if st.session_state.show_gt_footprint else 0
@@ -92,6 +94,10 @@ def _render_trajectory_and_timeseries(
         st.plotly_chart(plot_tsin(data, prediction), width="stretch")
 
     st.plotly_chart(plot_tv(data, prediction, ego_velocity_prediction), width="stretch")
+
+    st.plotly_chart(
+        plot_turn_indicator(data, turn_indicator_prediction), width="stretch"
+    )
 
 
 def _render_sample_info(
@@ -139,11 +145,13 @@ def render_main() -> None:
     model_loaded = st.session_state.model_loaded
 
     data, is_augmented = _current_data(npz_path)
-    prediction, ego_velocity_prediction = _predict_current_sample(
+    prediction, ego_velocity_prediction, turn_indicator_prediction = _predict_current_sample(
         npz_path, data, is_augmented, model_loaded
     )
 
-    _render_trajectory_and_timeseries(data, prediction, ego_velocity_prediction)
+    _render_trajectory_and_timeseries(
+        data, prediction, ego_velocity_prediction, turn_indicator_prediction
+    )
 
     with st.sidebar:
         _render_sample_info(npz_path, data, is_augmented, idx, n_total, model_loaded)
