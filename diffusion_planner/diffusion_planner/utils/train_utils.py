@@ -108,12 +108,19 @@ def resume_model(path: str, model, optimizer, scheduler, ema, device):
     except:
         print("no schedule found,")
 
-    # load step
+    # load epoch
     try:
         init_epoch = ckpt["epoch"]
-        print("Step load done")
+        print("Epoch load done")
     except:
         init_epoch = 0
+
+    # load global optimizer-step count (drives the LR schedule)
+    try:
+        init_step = ckpt["step"]
+        print("Step load done")
+    except:
+        init_step = None
 
     # Load wandb id
     try:
@@ -132,4 +139,4 @@ def resume_model(path: str, model, optimizer, scheduler, ema, device):
     except:
         print("no ema shadow found")
 
-    return model, optimizer, scheduler, init_epoch, wandb_id, ema
+    return model, optimizer, scheduler, init_epoch, init_step, wandb_id, ema

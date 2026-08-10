@@ -3,6 +3,7 @@ import argparse
 from diffusion_planner.dimensions import *
 from diffusion_planner.train import model_training
 from diffusion_planner.train_config import TrainConfig
+from diffusion_planner.utils.lr_schedule import LR_SCHEDULER_CHOICES
 from diffusion_planner.utils.normalizer import ObservationNormalizer, StateNormalizer
 
 
@@ -85,8 +86,26 @@ def get_args(args_list=None):
     parser.add_argument("--train_epochs", type=int, default=100)
     parser.add_argument("--batch_size", type=int, default=512)
     parser.add_argument("--save_utd", type=int, default=10)
-    parser.add_argument("--learning_rate", type=float, default=1e-4)
-    parser.add_argument("--warm_up_epoch", type=int, default=5)
+    parser.add_argument("--learning_rate", type=float, default=1e-4, help="peak LR")
+    parser.add_argument(
+        "--lr_scheduler",
+        type=str,
+        default=_train_config_default("lr_scheduler"),
+        choices=list(LR_SCHEDULER_CHOICES),
+        help="LR schedule shape after warm-up",
+    )
+    parser.add_argument(
+        "--warmup_steps",
+        type=int,
+        default=_train_config_default("warmup_steps"),
+        help="optimizer steps spent ramping up to --learning_rate",
+    )
+    parser.add_argument(
+        "--min_lr",
+        type=float,
+        default=_train_config_default("min_lr"),
+        help="LR at the end of the schedule",
+    )
     parser.add_argument("--encoder_drop_path_rate", type=float, default=0.1)
     parser.add_argument("--decoder_drop_path_rate", type=float, default=0.1)
     parser.add_argument("--use_ego_history", type=boolean, default=True)

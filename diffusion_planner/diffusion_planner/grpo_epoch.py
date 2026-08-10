@@ -176,7 +176,18 @@ def _grpo_step(raw_inputs, model, optimizer, args, ema, collider_injector, aug):
     }
 
 
-def train_grpo_epoch(data_loader, model, optimizer, args, ema, collider_injector, aug):
+def train_grpo_epoch(
+    data_loader,
+    model,
+    optimizer,
+    scheduler,
+    args,
+    ema,
+    global_step: int,
+    collider_injector,
+    aug,
+):
+    """Run one GRPO epoch. Returns the epoch losses and the updated global step count."""
     epoch_loss = []
 
     model.train()
@@ -199,6 +210,10 @@ def train_grpo_epoch(data_loader, model, optimizer, args, ema, collider_injector
         else:
             step_loss = _grpo_step(raw_inputs, model, optimizer, args, ema, collider_injector, aug)
 
+        # Both branches take exactly one optimizer step per batch.
+        global_step += 1
+        scheduler.step_update(global_step)
+
         if args.ddp:
             torch.cuda.synchronize()
         epoch_loss.append(step_loss)
@@ -214,4 +229,4 @@ def train_grpo_epoch(data_loader, model, optimizer, args, ema, collider_injector
             print(f"{epoch_mean_loss['reward_mean']=:.4f}")
             print(f"{epoch_mean_loss['reward_max']=:.4f}")
 
-    return epoch_mean_loss, epoch_mean_loss["loss"]
+    return epoch_mean_loss, epoch_mean_loss["loss"], global_step

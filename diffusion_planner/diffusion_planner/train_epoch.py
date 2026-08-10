@@ -32,7 +32,21 @@ def heading_to_cos_sin(x):
     )
 
 
-def train_epoch(data_loader, model, optimizer, args, ema, aug: StatePerturbation = None):
+def train_epoch(
+    data_loader,
+    model,
+    optimizer,
+    scheduler,
+    args,
+    ema,
+    global_step: int,
+    aug: StatePerturbation = None,
+):
+    """Run one epoch. Returns the epoch losses and the updated global optimizer-step count.
+
+    ``scheduler`` is a timm LR scheduler (see utils/lr_schedule.py) advanced once per
+    optimizer step, so the LR follows the global step count rather than the epoch index.
+    """
     epoch_loss = []
 
     model.train()
@@ -86,6 +100,8 @@ def train_epoch(data_loader, model, optimizer, args, ema, aug: StatePerturbation
 
         nn.utils.clip_grad_norm_(model.parameters(), 5)
         optimizer.step()
+        global_step += 1
+        scheduler.step_update(global_step)
 
         ema.update(model)
 
@@ -102,4 +118,4 @@ def train_epoch(data_loader, model, optimizer, args, ema, aug: StatePerturbation
         print(f"{epoch_mean_loss['loss']=:.4f}")
         print(f"{epoch_mean_loss['turn_indicator_accuracy']=:.4f}")
 
-    return epoch_mean_loss, epoch_mean_loss["loss"]
+    return epoch_mean_loss, epoch_mean_loss["loss"], global_step

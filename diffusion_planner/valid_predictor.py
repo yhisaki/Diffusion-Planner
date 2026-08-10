@@ -199,7 +199,7 @@ def run_validation(valid_cfg: ValidConfig):
     print(f"Model loaded from {valid_cfg.resume_model_path}")
     model_ema = ModelEma(diffusion_planner, decay=0.999, device=valid_cfg.device)
 
-    diffusion_planner, _, _, _, _, _ = resume_model(
+    diffusion_planner, _, _, _, _, _, _ = resume_model(
         valid_cfg.resume_model_path,
         diffusion_planner,
         optimizer,

@@ -20,7 +20,11 @@ from diffusion_planner.utils.data_augmentation_bridge import (
     StatePerturbation as BridgeStatePerturbation,
 )
 from diffusion_planner.utils.dataset import DiffusionPlannerData, DiffusionPlannerPairData
-from diffusion_planner.utils.lr_schedule import CosineAnnealingWarmUpRestarts
+from diffusion_planner.utils.lr_schedule import (
+    build_lr_scheduler,
+    describe_lr_scheduler,
+    set_base_lr,
+)
 from diffusion_planner.utils.normalizer import ObservationNormalizer, StateNormalizer
 from diffusion_planner.utils.onnx_export import export_checkpoint_onnx_guarded
 from diffusion_planner.utils.train_utils import resume_model, set_seed
@@ -333,22 +337,45 @@ def model_training(args: TrainConfig):
     ]
 
     optimizer = optim.AdamW(params)
-    scheduler = CosineAnnealingWarmUpRestarts(optimizer, train_epochs, args.warm_up_epoch)
+
+    # The LR schedule is a function of the global optimizer-step count, so it needs to
+    # know how long the run is in steps.
+    updates_per_epoch = len(train_loader)
+    scheduler = build_lr_scheduler(optimizer, args, total_steps=train_epochs * updates_per_epoch)
+    if global_rank == 0:
+        print(describe_lr_scheduler(args, train_epochs * updates_per_epoch))
 
     if args.resume_model_path is not None:
         print(f"Model loaded from {args.resume_model_path}")
         # We always use new wandb run for each training session, so we don't need to load the wandb_id from the model_dict.
-        diffusion_planner, optimizer, scheduler, init_epoch, _, model_ema = resume_model(
+        (
+            diffusion_planner,
+            optimizer,
+            scheduler,
+            init_epoch,
+            init_step,
+            _,
+            model_ema,
+        ) = resume_model(
             args.resume_model_path, diffusion_planner, optimizer, scheduler, model_ema, args.device
         )
 
-        # Override learning rate with the new value
-        for param_group in optimizer.param_groups:
-            param_group["lr"] = args.learning_rate
-        print(f"Learning rate reset to {args.learning_rate}")
+        # Checkpoints written before the step counter existed only carry the epoch.
+        if init_step is None:
+            init_step = init_epoch * updates_per_epoch
+
+        # Rebuild the schedule from the current config -- it is a pure function of the
+        # step count, so resuming loses nothing and the CLI wins over the checkpoint --
+        # and anchor it on the requested peak LR.
+        scheduler = build_lr_scheduler(
+            optimizer, args, total_steps=train_epochs * updates_per_epoch
+        )
+        set_base_lr(scheduler, args.learning_rate)
+        print(f"Resuming at step {init_step} with peak learning rate {args.learning_rate}")
 
     else:
         init_epoch = 0
+        init_step = 0
 
     if args.compile_model:
         # In-place compile (nn.Module.compile) keeps state_dict keys unchanged, so
@@ -427,27 +454,25 @@ def model_training(args: TrainConfig):
             )
 
     # begin training
+    global_step = init_step
+    # Set the LR for the first step of this session (matters when resuming).
+    scheduler.step_update(global_step)
+
     for epoch in range(init_epoch, train_epochs):
         # Synchronize all processes before training
         if args.ddp:
             torch.distributed.barrier()
 
-        # Adjust learning rate for final 10 epochs
-        final_epoch_count = 10
-        if epoch >= train_epochs - final_epoch_count:
-            base_lr = args.learning_rate
-            if epoch >= train_epochs - final_epoch_count // 2:  # Last 5 epochs: LR * 1/100
-                adjusted_lr = base_lr * 0.01
-            else:  # First 5 of final 10 epochs: LR * 1/10
-                adjusted_lr = base_lr * 0.1
-            for param_group in optimizer.param_groups:
-                param_group["lr"] = adjusted_lr
-            if global_rank == 0:
-                print(f"Final phase: Epoch {epoch + 1}, LR adjusted to {adjusted_lr}")
-
         # training step
-        train_loss, train_total_loss = train_epoch(
-            train_loader, diffusion_planner, optimizer, args, model_ema, aug
+        train_loss, train_total_loss, global_step = train_epoch(
+            train_loader,
+            diffusion_planner,
+            optimizer,
+            scheduler,
+            args,
+            model_ema,
+            global_step,
+            aug,
         )
 
         valid_dict = validate_model(diffusion_planner, valid_loader, args)
@@ -510,6 +535,7 @@ def model_training(args: TrainConfig):
 
             curr_data = {
                 "epoch": epoch + 1,
+                "step": global_step,
                 "train_loss": train_total_loss,
                 "valid_loss_ego": valid_loss_ego,
                 "valid_loss_neighbor": valid_loss_neighbor,
@@ -524,6 +550,7 @@ def model_training(args: TrainConfig):
 
             model_dict = {
                 "epoch": epoch + 1,
+                "step": global_step,
                 "model": diffusion_planner.state_dict(),
                 "ema_state_dict": model_ema.ema.state_dict(),
                 "optimizer": optimizer.state_dict(),
@@ -581,7 +608,6 @@ def model_training(args: TrainConfig):
                     external_data=False,
                 )
 
-        scheduler.step()
         train_sampler.set_epoch(epoch + 1)
 
     if global_rank == 0 and wandb.run is not None:

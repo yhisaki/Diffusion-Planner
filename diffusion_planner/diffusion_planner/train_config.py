@@ -72,8 +72,11 @@ class TrainConfig:
     train_epochs: int = 100
     batch_size: int = 512
     save_utd: int = 10
+    # LR schedule (see diffusion_planner/utils/lr_schedule.py); stepped per optimizer update.
     learning_rate: float = 1e-4
-    warm_up_epoch: int = 5
+    lr_scheduler: str = "cosine"
+    warmup_steps: int = 1000
+    min_lr: float = 0.0
     encoder_drop_path_rate: float = 0.1
     decoder_drop_path_rate: float = 0.1
     use_ego_history: bool = True

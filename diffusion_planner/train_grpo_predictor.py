@@ -25,7 +25,12 @@ from diffusion_planner.utils.data_augmentation_bridge import (
     StatePerturbation as BridgeStatePerturbation,
 )
 from diffusion_planner.utils.dataset import DiffusionPlannerData
-from diffusion_planner.utils.lr_schedule import CosineAnnealingWarmUpRestarts
+from diffusion_planner.utils.lr_schedule import (
+    LR_SCHEDULER_CHOICES,
+    build_lr_scheduler,
+    describe_lr_scheduler,
+    set_base_lr,
+)
 from diffusion_planner.utils.neighbor_db import NeighborPatternDB
 from diffusion_planner.utils.normalizer import ObservationNormalizer, StateNormalizer
 from diffusion_planner.utils.onnx_export import export_checkpoint_onnx_guarded
@@ -122,8 +127,21 @@ def get_args():
     parser.add_argument("--train_epochs", type=int, default=30)
     parser.add_argument("--batch_size", type=int, default=64, help="number of scenes per step")
     parser.add_argument("--save_utd", type=int, default=1)
-    parser.add_argument("--learning_rate", type=float, default=5e-6)
-    parser.add_argument("--warm_up_epoch", type=int, default=2)
+    parser.add_argument("--learning_rate", type=float, default=5e-6, help="peak LR")
+    parser.add_argument(
+        "--lr_scheduler",
+        type=str,
+        default="cosine",
+        choices=list(LR_SCHEDULER_CHOICES),
+        help="LR schedule shape after warm-up",
+    )
+    parser.add_argument(
+        "--warmup_steps",
+        type=int,
+        default=100,
+        help="optimizer steps spent ramping up to --learning_rate",
+    )
+    parser.add_argument("--min_lr", type=float, default=0.0, help="LR at the end of the schedule")
     parser.add_argument("--encoder_drop_path_rate", type=float, default=0.1)
     parser.add_argument("--decoder_drop_path_rate", type=float, default=0.1)
     parser.add_argument("--use_ego_history", type=boolean, default=True)
@@ -516,16 +534,29 @@ def model_training(args):
         }
     ]
     optimizer = optim.AdamW(params)
-    scheduler = CosineAnnealingWarmUpRestarts(optimizer, train_epochs, args.warm_up_epoch)
+
+    total_steps = train_epochs * len(train_loader)
+    scheduler = build_lr_scheduler(optimizer, args, total_steps=total_steps)
+    if global_rank == 0:
+        print(describe_lr_scheduler(args, total_steps))
 
     if args.resume_model_path is not None:
         print(f"Model loaded from {args.resume_model_path}")
-        diffusion_planner, optimizer, scheduler, init_epoch, wandb_id, model_ema = resume_model(
+        (
+            diffusion_planner,
+            optimizer,
+            scheduler,
+            init_epoch,
+            _,
+            wandb_id,
+            model_ema,
+        ) = resume_model(
             args.resume_model_path, diffusion_planner, optimizer, scheduler, model_ema, args.device
         )
-        # GRPO restarts the LR schedule from the configured base rate.
-        for param_group in optimizer.param_groups:
-            param_group["lr"] = args.learning_rate
+        # GRPO fine-tuning restarts the LR schedule (and the epoch/step counters) from
+        # scratch on top of the loaded weights, at the configured peak LR.
+        scheduler = build_lr_scheduler(optimizer, args, total_steps=total_steps)
+        set_base_lr(scheduler, args.learning_rate)
         init_epoch = 0
         print(f"Learning rate set to {args.learning_rate}")
     else:
@@ -550,16 +581,22 @@ def model_training(args):
     data_list = []
     best_reward = -float("inf")
 
+    global_step = 0
+    # Set the LR for the first step (warm-up start).
+    scheduler.step_update(global_step)
+
     for epoch in range(init_epoch, train_epochs):
         if args.ddp:
             torch.distributed.barrier()
 
-        train_loss, train_total_loss = train_grpo_epoch(
+        train_loss, train_total_loss, global_step = train_grpo_epoch(
             train_loader,
             diffusion_planner,
             optimizer,
+            scheduler,
             args,
             model_ema,
+            global_step,
             collider_injector,
             aug,
         )
@@ -592,6 +629,7 @@ def model_training(args):
 
             curr_data = {
                 "epoch": epoch + 1,
+                "step": global_step,
                 "train_reward_mean": train_reward,
                 "train_loss": train_total_loss,
                 "valid_loss_ego": valid_loss_ego,
@@ -605,6 +643,7 @@ def model_training(args):
 
             model_dict = {
                 "epoch": epoch + 1,
+                "step": global_step,
                 "model": diffusion_planner.state_dict(),
                 "ema_state_dict": model_ema.ema.state_dict(),
                 "optimizer": optimizer.state_dict(),
@@ -657,7 +696,7 @@ def model_training(args):
                     external_data=False,
                 )
 
-        scheduler.step()
+        # The LR schedule is advanced per optimizer step inside train_grpo_epoch().
         train_sampler.set_epoch(epoch + 1)
 
 
