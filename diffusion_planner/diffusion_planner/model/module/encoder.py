@@ -708,11 +708,16 @@ class LineEncoder(nn.Module):
 
 
 class GoalPoseEncoder(nn.Module):
-    def __init__(self, drop_path_rate, hidden_dim):
+    # A goal farther away than this carries no usable local information, so its token is
+    # masked out instead of pulling the encoder towards a point outside the observed scene.
+    MAX_DISTANCE = 100.0
+
+    def __init__(self, drop_path_rate, hidden_dim, max_distance: float = MAX_DISTANCE):
         super().__init__()
         channels_mlp_dim = 128
 
         self._hidden_dim = hidden_dim
+        self._max_distance = max_distance
 
         self.channel_pre_project = Mlp(
             in_features=4,
@@ -740,7 +745,10 @@ class GoalPoseEncoder(nn.Module):
         pos = pos.unsqueeze(1)  # (B, 1, D=4)
         pos = add_class_type(pos, CLASS_TYPE_GOAL_POSE)
 
-        mask = torch.zeros((B, 1), dtype=torch.bool, device=x.device)
+        # Invalidate the token when the goal is not within self._max_distance of the ego
+        # (goal_pose is in ego-centric metres, so the norm of (x, y) is the distance).
+        distance = torch.linalg.vector_norm(x[:, :2], dim=-1, keepdim=True)  # (B, 1)
+        mask = distance > self._max_distance  # (B, 1), True = masked out
 
         x = self.channel_pre_project(x)  # (B, C=channels_mlp_dim)
         x = x.unsqueeze(1)  # (B, 1, C=channels_mlp_dim)
